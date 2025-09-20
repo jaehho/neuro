@@ -8,7 +8,6 @@ V_min, V_max, nV = -100.0, 50.0, 151   # mV
 
 V = np.linspace(V_min, V_max, nV)
 
-# Plot steady-state values and time constants for all gating variables
 gates = [
     ('m', alpha_m, beta_m),
     ('h', alpha_h, beta_h),
@@ -22,13 +21,13 @@ for i, (name, alpha_func, beta_func) in enumerate(gates):
     x_inf = alpha_func(V) / (alpha_func(V) + beta_func(V))
     axes[0].plot(V, x_inf, color=colors[i], label=f'{name}_inf')
     axes[1].plot(V, tau, color=colors[i], label=f'tau_{name}')
-axes[0].set_title('Steady-state values (x_inf)')
+axes[0].set_title('Steady-state values ($x_{\\text{inf}}$)')
 axes[0].set_xlabel('Voltage (mV)')
-axes[0].set_ylabel('x_inf')
+axes[0].set_ylabel('$x_{\\text{inf}}$')
 axes[0].legend()
-axes[1].set_title('Time constants (tau)')
+axes[1].set_title('Time constants ($\\tau$)')
 axes[1].set_xlabel('Voltage (mV)')
-axes[1].set_ylabel('tau (ms)')
+axes[1].set_ylabel('$\\tau$ (ms)')
 axes[1].legend()
 
 plt.tight_layout()
