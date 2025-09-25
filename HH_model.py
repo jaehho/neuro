@@ -41,6 +41,22 @@ for k in range(nt-1):
     h[k+1] = np.clip(hk + dt*dhdt, 0.0, 1.0)
     n[k+1] = np.clip(nk + dt*dndt, 0.0, 1.0)
 
+# Calculate steady-state values and time constants over time
+am_t, bm_t = alpha_m(V), beta_m(V)
+ah_t, bh_t = alpha_h(V), beta_h(V)
+an_t, bn_t = alpha_n(V), beta_n(V)
+
+# Steady-state values x_inf(V(t)) and taus tau(V(t))
+m_inf_t = am_t / (am_t + bm_t)
+h_inf_t = ah_t / (ah_t + bh_t)
+n_inf_t = an_t / (an_t + bn_t)
+
+tau_m_t = 1.0 / (am_t + bm_t)
+tau_h_t = 1.0 / (ah_t + bh_t)
+tau_n_t = 1.0 / (an_t + bn_t)
+
+
+# %% Plotting Hodgekin-Huxley Voltage and Gating Variables
 fig = plt.figure(figsize=(8, 6))
 
 # 3D plot
@@ -78,45 +94,98 @@ ax4.legend()
 plt.tight_layout()
 plt.show(block=False)
 
-n_post = np.empty(nt)
-n_post[0] = n0
+# %% Describing V from gating Variables
+fig, ax1 = plt.subplots(figsize=(6, 4))
 
-for k in range(nt-1):
-    Vk, nk_post = V[k], n_post[k]
-    # gNa_t = g_Na * (mk**3) * hk
-    # gK_t  = g_K  * (nk_post**4)
-    # gL_t  = g_L
-    # INa = gNa_t * (Vk - E_Na)
-    # IK  = gK_t  * (Vk - E_K)
-    # IL  = gL_t  * (Vk - E_L)
-    # dVdt = (I_ext(t[k]) - (INa + IK + IL)) / c_m
+# Left y-axis: V
+ax1.plot(t, V, color='k', label='V(t)', linewidth=2)
+ax1.set_xlabel('Time (ms)')
+ax1.set_ylabel('V (mV)', color='k')
+ax1.tick_params(axis='y', labelcolor='k')
 
-    # am, bm = alpha_m(Vk), beta_m(Vk)
-    # ah, bh = alpha_h(Vk), beta_h(Vk)
-    an_post, bn_post = alpha_n(Vk), beta_n(Vk)
-    # dmdt = am*(1.0 - mk) - bm*mk
-    # dhdt = ah*(1.0 - hk) - bh*hk
-    dndt = an_post*(1.0 - nk_post) - bn_post*nk_post
+# Right y-axis: activation values x max conductance
+ax2 = ax1.twinx()
+ax2.plot(t, g_Na * (m**3) * h, color='b', label=r'$\overline{g}_{Na} m^{3}h$', linestyle='--')
+ax2.plot(t, g_K * (n**4), color='r', label=r'$\overline{g}_{K} n^{4}$', linestyle='--')
+ax2.plot(t, g_L * np.ones_like(t), color='g', label=r'$\overline{g}_{L}$', linestyle='--')
+ax2.set_ylabel('Conductance (mS)', color='k')
+ax2.tick_params(axis='y', labelcolor='k')
 
-    # V[k+1] = Vk + dt*dVdt
-    # m[k+1] = np.clip(mk + dt*dmdt, 0.0, 1.0)
-    # h[k+1] = np.clip(hk + dt*dhdt, 0.0, 1.0)
-    n_post[k+1] = np.clip(nk_post + dt*dndt, 0.0, 1.0)
-    
+# Legends
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
 
-fig = plt.figure(figsize=(8, 6))
+# Reversal Potentials
+ax1.axhline(E_Na, color='b', linestyle='solid', linewidth=1)
+ax1.axhline(E_K, color='r', linestyle='solid', linewidth=1)
+ax1.axhline(E_L, color='g', linestyle='solid', linewidth=1)
+ax1.text(t_max*0.8, E_Na+2, '$E_{Na}$', color='b')
+ax1.text(t_max*0.8, E_K+2, '$E_{K}$', color='r')
+ax1.text(t_max*0.8, E_L+2, '$E_{L}$', color='g')
+plt.title('Membrane Potential and Conductances over Time')
 
-# 3D plot
-ax = fig.add_subplot(211)
-ax.plot(t, V, color='k')
+plt.show(block=False)
 
-# Orthographic projections
-ax2 = fig.add_subplot(212)
-ax2.plot(t, n, label='n gate', color='b')
-ax2.plot(t, n_post, label='n_post gate', color='r', linestyle='dashed', linewidth=3)
-ax2.set_xlabel('Time (ms)')
-ax2.set_ylabel('Probability')
-ax2.legend()
+# %% Comparing Activation Variables and Conductances
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
+# Left y-axis: activation values
+axes[0].plot(t, m**3 * h, color='b', label=r'$m^{3}h \; (\text{Na\ activation})$')
+axes[0].plot(t, n**4, color='r', label=r'$n^{4} \; (\text{K\ activation})$')
+axes[0].set_ylabel('Activation (0–1)', color='k')
+axes[0].set_xlabel('Time (ms)')
+axes[0].legend(loc='upper right')
+axes[0].set_title('Activation Variables')
+
+
+# Right y-axis: activation values x max conductance
+axes[1].plot(t, g_Na * (m**3) * h, color='b', label=r'$\overline{g}_{Na} m^{3}h$')
+axes[1].plot(t, g_K * (n**4), color='r', label=r'$\overline{g}_{K} n^{4}$')
+axes[1].plot(t, g_L * np.ones_like(t), color='g', label=r'$\overline{g}_{L}$')
+axes[1].set_ylabel('Conductance (mS)', color='k')
+axes[1].set_xlabel('Time (ms)')
+axes[1].legend(loc='upper right')
+axes[1].set_title('Conductances')
+
+plt.suptitle('Activation Variables vs Conductances')
+
+plt.show(block=False)
+
+# %% gating variables vs steady state (row 1), time constants (row 2)
+fig, axes = plt.subplots(2, 3, figsize=(12, 6), sharex=True)
+
+# Row 1: gating variables and steady states
+axes[0, 0].plot(t, m, 'b', label='m(t)')
+axes[0, 0].plot(t, m_inf_t, 'b--', label=r'$m_\infty(V)$')
+axes[0, 0].set_ylabel('m')
+axes[0, 0].set_title('m gate')
+axes[0, 0].legend(loc='best')
+
+axes[0, 1].plot(t, h, 'g', label='h(t)')
+axes[0, 1].plot(t, h_inf_t, 'g--', label=r'$h_\infty(V)$')
+axes[0, 1].set_title('h gate')
+axes[0, 1].legend(loc='best')
+
+axes[0, 2].plot(t, n, 'r', label='n(t)')
+axes[0, 2].plot(t, n_inf_t, 'r--', label=r'$n_\infty(V)$')
+axes[0, 2].set_title('n gate')
+axes[0, 2].legend(loc='best')
+
+# Row 2: time constants
+axes[1, 0].plot(t, tau_m_t, 'b', label=r'$\tau_m$')
+axes[1, 0].set_xlabel('Time (ms)')
+axes[1, 0].set_ylabel('τ (ms)')
+axes[1, 0].legend(loc='best')
+
+axes[1, 1].plot(t, tau_h_t, 'g', label=r'$\tau_h$')
+axes[1, 1].set_xlabel('Time (ms)')
+axes[1, 1].legend(loc='best')
+
+axes[1, 2].plot(t, tau_n_t, 'r', label=r'$\tau_n$')
+axes[1, 2].set_xlabel('Time (ms)')
+axes[1, 2].legend(loc='best')
+
+plt.suptitle('Gating variables, steady states, and time constants over time')
 plt.tight_layout()
 plt.show()

@@ -21,7 +21,7 @@ for i, (name, alpha_func, beta_func) in enumerate(gates):
     x_inf = alpha_func(V) / (alpha_func(V) + beta_func(V))
     axes[0].plot(V, x_inf, color=colors[i], label=f'{name}_inf')
     axes[1].plot(V, tau, color=colors[i], label=f'tau_{name}')
-axes[0].set_title('Steady-state values ($x_{\\text{inf}}$)')
+axes[0].set_title('Steady-state values ($x_{\\infty}$)')
 axes[0].set_xlabel('Voltage (mV)')
 axes[0].set_ylabel('$x_{\\text{inf}}$')
 axes[0].legend()
