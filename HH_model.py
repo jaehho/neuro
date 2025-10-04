@@ -5,7 +5,7 @@ from HH_constants import c_m, g_Na, g_K, g_L, E_Na, E_K, E_L
 
 # External current (uA/cm^2)
 def I_ext(t):
-    return 10.0 if (10.0 <= t <= 40.0) else 0.0
+    return 15.0 if (10.0 <= t <= 40.0) else 0.0
 
 t_max, dt = 50.0, 0.001
 t = np.arange(0.0, t_max + 1e-12, dt)
@@ -55,6 +55,21 @@ tau_m_t = 1.0 / (am_t + bm_t)
 tau_h_t = 1.0 / (ah_t + bh_t)
 tau_n_t = 1.0 / (an_t + bn_t)
 
+# Compute time-series conductances and weights
+gNa_t = g_Na * (m**3) * h
+gK_t  = g_K  * (n**4)
+gL_t  = g_L  * np.ones_like(t)
+
+INa_t = gNa_t * (V - E_Na)
+IK_t  = gK_t  * (V - E_K)
+IL_t  = gL_t  * (V - E_L)
+
+w_Na  = -INa_t / c_m
+w_K   = -IK_t  / c_m
+w_L   = -IL_t  / c_m
+w_ext = np.array([I_ext(tt) for tt in t]) / c_m
+w_sum = w_ext + w_Na + w_K + w_L  # should equal dV/dt
+
 
 # %% Plotting Hodgekin-Huxley Voltage and Gating Variables
 fig = plt.figure(figsize=(8, 6))
@@ -94,37 +109,44 @@ ax4.legend()
 plt.tight_layout()
 plt.show(block=False)
 
-# %% Describing V from gating Variables
-fig, ax1 = plt.subplots(figsize=(6, 4))
+# %% Voltage (top) and per-channel dV/dt weights (bottom)
+fig, (axV, axW) = plt.subplots(2, 1, figsize=(16, 8), sharex=True, gridspec_kw={'height_ratios': [1, 2]})
 
-# Left y-axis: V
-ax1.plot(t, V, color='k', label='V(t)', linewidth=2)
-ax1.set_xlabel('Time (ms)')
-ax1.set_ylabel('V (mV)', color='k')
-ax1.tick_params(axis='y', labelcolor='k')
+# set xticks every 2 ms
+xticks = np.arange(0, t_max+1, 1)
 
-# Right y-axis: activation values x max conductance
-ax2 = ax1.twinx()
-ax2.plot(t, g_Na * (m**3) * h, color='b', label=r'$\overline{g}_{Na} m^{3}h$', linestyle='--')
-ax2.plot(t, g_K * (n**4), color='r', label=r'$\overline{g}_{K} n^{4}$', linestyle='--')
-ax2.plot(t, g_L * np.ones_like(t), color='g', label=r'$\overline{g}_{L}$', linestyle='--')
-ax2.set_ylabel('Conductance (mS)', color='k')
-ax2.tick_params(axis='y', labelcolor='k')
+# Row 1: V(t) with reversal lines
+axV.plot(t, V, color='k', linewidth=2, label='V(t)')
+axV.axhline(E_Na, color='b', linewidth=1)
+axV.axhline(E_K,  color='r', linewidth=1)
+axV.axhline(E_L,  color='g', linewidth=1)
+axV.text(t_max*0.82, E_Na+2, '$E_{Na}$', color='b')
+axV.text(t_max*0.82, E_K+2,  '$E_{K}$',  color='r')
+axV.text(t_max*0.82, E_L+2,  '$E_{L}$',  color='g')
+axV.set_ylabel('V (mV)')
+axV.set_title('Voltage and per-channel weights to dV/dt')
+axV.legend(loc='best')
+axV.grid(which='both', axis='x')
+axV.set_xticks(xticks)
 
-# Legends
-lines1, labels1 = ax1.get_legend_handles_labels()
-lines2, labels2 = ax2.get_legend_handles_labels()
-ax1.legend(lines1 + lines2, labels1 + labels2, loc='best')
+# Row 2: Weights of each channel to dV/dt
+axW.axhline(0, color='gray', linewidth=0.5)
+axW.plot(t, w_ext, color='k', linestyle=':', label=r'$I_{\mathrm{ext}}/c_m$')
+axW.plot(t, w_Na,  color='b', linestyle='--', label=r'$-\;\overline{g}_{Na} m^{3}h(V-E_{Na})/c_m$')
+axW.plot(t, w_K,   color='r', linestyle='--', label=r'$-\;\overline{g}_{K} n^{4}(V-E_{K})/c_m$')
+axW.plot(t, w_L,   color='g', linestyle='--', label=r'$-\;\overline{g}_{L}(V-E_{L})/c_m$')
 
-# Reversal Potentials
-ax1.axhline(E_Na, color='b', linestyle='solid', linewidth=1)
-ax1.axhline(E_K, color='r', linestyle='solid', linewidth=1)
-ax1.axhline(E_L, color='g', linestyle='solid', linewidth=1)
-ax1.text(t_max*0.8, E_Na+2, '$E_{Na}$', color='b')
-ax1.text(t_max*0.8, E_K+2, '$E_{K}$', color='r')
-ax1.text(t_max*0.8, E_L+2, '$E_{L}$', color='g')
-plt.title('Membrane Potential and Conductances over Time')
+# show sum equals numerical dV/dt
+axW.plot(t, np.gradient(V, dt), color='gray', alpha=0.6, label='dV/dt (num)')
+axW.plot(t, w_sum, color='purple', linestyle=':', alpha=0.6, label='sum of weights')
 
+axW.set_xlabel('Time (ms)')
+axW.set_ylabel('Weight to dV/dt (mV/ms)')
+axW.legend(loc='best')
+axW.grid(which='both', axis='x')
+axW.set_xticks(xticks)
+
+plt.tight_layout()
 plt.show(block=False)
 
 # %% Comparing Activation Variables and Conductances
