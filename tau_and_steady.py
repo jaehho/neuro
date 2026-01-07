@@ -31,4 +31,5 @@ axes[1].set_ylabel('$\\tau$ (ms)')
 axes[1].legend()
 
 plt.tight_layout()
+plt.savefig('figures/tau_and_steady.png')
 plt.show()

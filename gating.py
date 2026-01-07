@@ -49,7 +49,8 @@ elif method == 'numeric':
     # initial condition: gate is at steady-state for the pre-clamp voltage
     alpha_c = alpha(np.array([V_clamp]))
     beta_c  = beta(np.array([V_clamp]))
-    x0 = float(alpha_c / (alpha_c + beta_c))   # scalar
+    # x0 = float(alpha_c / (alpha_c + beta_c))   # scalar
+    x0 = (alpha_c / (alpha_c + beta_c)).item()
 
     # allocate the surface: rows=time, cols=voltage
     X = np.empty((nt, nV), dtype=float)
