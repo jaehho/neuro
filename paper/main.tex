@@ -27,17 +27,17 @@ Before deriving the macroscopic plasticity rules, we must first establish the mi
 \subsection{Membrane Potential Dynamics}
 The state of a postsynaptic neuron $i$ is described by its membrane potential $V_i(t)$. In the absence of input, the membrane potential relaxes to a resting potential $E_L$. The evolution of $V_i(t)$ is governed by the conservation of current across the cell membrane, modeled as an RC circuit consisting of a leakage resistor $R_m$ and a membrane capacitor $C_m$ in parallel \parencite{dayan_theoretical_2001}:
 
+
+
 \begin{equation} \label{eq:lif_voltage}
     \tau_m \frac{dV_i(t)}{dt} = -(V_i(t) - E_L) + R_m I_{syn, i}(t) + R_m I_{ext, i}(t),
 \end{equation}
 where $\tau_m = R_m C_m$ represents the membrane time constant. In cortical pyramidal neurons, $\tau_m$ typically lies in the range of 10--20 ms \parencite{dayan_theoretical_2001}. The term $I_{syn, i}(t)$ represents the total synaptic current received from presynaptic neurons, and $I_{ext, i}(t)$ accounts for any external background currents or noise.
 
 \subsection{Synaptic Interaction}
-The synaptic current $I_{syn, i}(t)$ is determined by the activity of the presynaptic population. Let the spike train of a presynaptic neuron $j$ be denoted by $\rho_j(t)$. The specific mathematical definition of these spike times is provided in Section \ref{sec:spike_gen}.
-% Keep the full equation here as well for clarity ($\rho_j(t) = \sum_k \delta(t - t_j^k)$)
+The synaptic current $I_{syn, i}(t)$ is determined by the activity of the presynaptic population. Let the spike train of a presynaptic neuron $j$ be denoted by $\rho_j(t) = \sum_k \delta(t - t_j^k)$. The specific mathematical definition of these spike times is provided in Section \ref{sec:spike_gen}.
 
-The arrival of a spike from neuron $j$ induces a transient change in the input to neuron $i$. We utilize the \textit{current-based} approximation, which assumes that synaptic currents are independent of the postsynaptic membrane potential (unlike conductance-based models where $I \propto g(t)(V - E_{syn})$). This approximation is standard for analyzing network-level learning dynamics \parencite{gerstner_neuronal_2014}. The total synaptic current is the linear sum of filtered presynaptic spikes, weighted by the synaptic efficacy $w_{ij}$:
-% point reader to where $w_{ij}$ is elaborated
+The arrival of a spike from neuron $j$ induces a transient change in the input to neuron $i$. We utilize the \textit{current-based} approximation, which assumes that synaptic currents are independent of the postsynaptic membrane potential (unlike conductance-based models where $I \propto g(t)(V - E_{syn})$). This approximation is standard for analyzing network-level learning dynamics \parencite{gerstner_neuronal_2014}. The total synaptic current is the linear sum of filtered presynaptic spikes, weighted by the synaptic efficacy $w_{ij}$ (the dynamics of which are derived in Section \ref{sec:weight_constraints}):
 
 \begin{equation} \label{eq:synaptic_current}
     I_{syn, i}(t) = \sum_{j} w_{ij} \int_{-\infty}^{t} \alpha(t - s) \rho_j(s) \, ds,
@@ -51,8 +51,10 @@ The continuous voltage dynamics defined above give rise to discrete events. Math
 \end{equation}
 While a simple condition $V > \vartheta$ is often used in discrete-time simulations, the derivative condition $\frac{dV}{dt} > 0$ is required analytically to distinguish the leading edge of the spike (the event) from the subsequent duration of the pulse or the repolarization phase.
 
-Immediately following a spike, the potential is reset to a value $V_{reset} < \vartheta$ and held constant for a refractory period $\tau_{ref}$ (typically 2--5 ms), simulating the temporary inactivation of $Na^+$ channels. This reset ensures that the crossing condition in \eqref{eq:threshold} is sufficient to uniquely define spike times. This mechanism defines the postsynaptic spike train $\rho_i(t) = \sum_k \delta(t - t_i^k)$, which serves as the input to the plasticity equations in the following section.
-% Is this method of implementing refractory period correct, it seems different than the method laid out in dayan and abbott
+
+
+Following the formalism in \textcite{dayan_theoretical_2001}, the absolute refractory period is modeled by interrupting the integration of \eqref{eq:lif_voltage}. When $V_i$ reaches threshold at $t_i^k$, the potential is reset to $V_{reset} < \vartheta$. The dynamics in \eqref{eq:lif_voltage} are then \textit{suspended} for the duration $\tau_{ref}$ (typically 2--5 ms). Integration resumes at $t = t_i^k + \tau_{ref}$ with the initial condition $V_i(t_i^k + \tau_{ref}) = V_{reset}$. This mechanism defines the postsynaptic spike train $\rho_i(t) = \sum_k \delta(t - t_i^k)$, which serves as the input to the plasticity equations in the following section.
+
 \section{Mathematical Formulation of the Three-Factor Plasticity Model}
 
 Having defined the generation of spike times via the LIF dynamics, we now analyze the evolution of the synaptic weights $w_{ij}$. We focus on a plasticity rule belonging to the class of \textit{three-factor learning rules}, as reviewed by \textcite{fremaux_neuromodulated_2016}. 
@@ -63,6 +65,8 @@ In standard STDP, weight changes depend on two local factors:
     \item \textbf{Factor 2:} Postsynaptic spike timing ($t_i^k$).
 \end{itemize}
 In the three-factor framework, these local correlations are gated by a global third signal, \textbf{Factor 3}, representing neuromodulation or reward.
+
+
 
 \subsection{Neural Activity and Notation}
 Following the framework established in the previous section, the neural response functions are formally treated as sums of Dirac distributions:
@@ -101,7 +105,7 @@ The signal $M(t)$ is modeled as a Reward Prediction Error (RPE), calculated as t
 \end{equation}
 Here, $\bar{R}(t)$ serves as a reference point, allowing for bidirectional regulation of synaptic weights \parencite{fremaux_neuromodulated_2016}.
 
-\subsection{Weight Constraints and Stability}
+\subsection{Weight Constraints and Stability} \label{sec:weight_constraints}
 The synaptic weight $w_{ij}$ represents the efficacy of the connection from neuron $j$ to neuron $i$. To prevent unbounded growth during the learning process, we constrain the weight to a closed interval $w_{ij} \in [0, w_{\text{max}}]$. The parameter $w_{\text{max}}$ represents the physiological saturation limit of synaptic efficacy.
 
 We enforce these bounds using "soft bound" dependencies in the scaling functions:
