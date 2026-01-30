@@ -5,14 +5,18 @@
 \usepackage{geometry}
 \usepackage{setspace}
 \usepackage{graphicx}
+\usepackage{csquotes} % Recommended when using biblatex
+
+% Biblatex setup
 \usepackage[style=numeric-comp, backend=biber, sorting=none]{biblatex}
+\addbibresource{references.bib}
+
+% Hyperref should generally be loaded last
+\usepackage[colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue]{hyperref}
 
 % Layout settings for readability
 \geometry{a4paper, margin=1in}
 \linespread{1.15}
-
-% Bibliography resource
-\addbibresource{references.bib}
 
 % Theorem/Definition styles
 \theoremstyle{definition}
@@ -27,8 +31,6 @@ Before deriving the macroscopic plasticity rules, we must first establish the mi
 \subsection{Membrane Potential Dynamics}
 The state of a postsynaptic neuron $i$ is described by its membrane potential $V_i(t)$. In the absence of input, the membrane potential relaxes to a resting potential $E_L$. The evolution of $V_i(t)$ is governed by the conservation of current across the cell membrane, modeled as an RC circuit consisting of a leakage resistor $R_m$ and a membrane capacitor $C_m$ in parallel \parencite{dayan_theoretical_2001}:
 
-
-
 \begin{equation} \label{eq:lif_voltage}
     \tau_m \frac{dV_i(t)}{dt} = -(V_i(t) - E_L) + R_m I_{syn, i}(t) + R_m I_{ext, i}(t),
 \end{equation}
@@ -42,22 +44,20 @@ The arrival of a spike from neuron $j$ induces a transient change in the input t
 \begin{equation} \label{eq:synaptic_current}
     I_{syn, i}(t) = \sum_{j} w_{ij} \int_{-\infty}^{t} \alpha(t - s) \rho_j(s) \, ds,
 \end{equation}
-where $\alpha(t)$ is the postsynaptic current (PSC) kernel. Following \textcite{dayan_theoretical_2001}, this is modeled as an exponential decay function $\alpha(t) = \frac{1}{\tau_s} e^{-t/\tau_s} \Theta(t)$, where $\Theta(t)$ is the Heaviside step function. The synaptic time constant $\tau_s$ typically ranges from 2--10 ms for fast AMPA/GABA receptors \parencite{destexhe_kinetic_1998}.
+where $\alpha(t)$ is the postsynaptic current (PSC) kernel. Following \textcite{dayan_theoretical_2001}, this is modeled as an exponential decay function $\alpha(t) = \frac{1}{\tau_s} e^{-t/\tau_s} \Theta(t)$, where $\Theta(t)$ is the Heaviside step function. The synaptic time constant $\tau_s$ typically ranges from 2--10 ms for fast AMPA/GABA receptors \parencite{destexhe_kinetic_1998}-.
 
-\subsection{Spike Generation Mechanism} \label{sec:spike_gen}
+0\subsection{Spike Generation Mechanism} \label{sec:spike_gen}
 The continuous voltage dynamics defined above give rise to discrete events. Mathematically, a spike is not a duration but a single point in time $t_i^k$. This is defined as the moment the membrane potential crosses a fixed threshold $\vartheta$ from below:
 \begin{equation} \label{eq:threshold}
     t_i^k : V_i(t_i^k) = \vartheta \quad \text{and} \quad \frac{dV_i}{dt}\bigg|_{t=t_i^k} > 0.
 \end{equation}
 While a simple condition $V > \vartheta$ is often used in discrete-time simulations, the derivative condition $\frac{dV}{dt} > 0$ is required analytically to distinguish the leading edge of the spike (the event) from the subsequent duration of the pulse or the repolarization phase.
 
-
-
 Following the formalism in \textcite{dayan_theoretical_2001}, the absolute refractory period is modeled by interrupting the integration of \eqref{eq:lif_voltage}. When $V_i$ reaches threshold at $t_i^k$, the potential is reset to $V_{reset} < \vartheta$. The dynamics in \eqref{eq:lif_voltage} are then \textit{suspended} for the duration $\tau_{ref}$ (typically 2--5 ms). Integration resumes at $t = t_i^k + \tau_{ref}$ with the initial condition $V_i(t_i^k + \tau_{ref}) = V_{reset}$. This mechanism defines the postsynaptic spike train $\rho_i(t) = \sum_k \delta(t - t_i^k)$, which serves as the input to the plasticity equations in the following section.
 
 \section{Mathematical Formulation of the Three-Factor Plasticity Model}
 
-Having defined the generation of spike times via the LIF dynamics, we now analyze the evolution of the synaptic weights $w_{ij}$. We focus on a plasticity rule belonging to the class of \textit{three-factor learning rules}, as reviewed by \textcite{fremaux_neuromodulated_2016}. 
+Having defined the generation of spike times via the LIF dynamics, we now analyze the evolution of the synaptic weights $w_{ij}$. We focus on a plasticity rule belonging to the class of \textit{three-factor learning rules}, as reviewed by \textcite{fremaux_neuromodulated_2016}.
 
 In standard STDP, weight changes depend on two local factors:
 \begin{itemize}
@@ -65,8 +65,6 @@ In standard STDP, weight changes depend on two local factors:
     \item \textbf{Factor 2:} Postsynaptic spike timing ($t_i^k$).
 \end{itemize}
 In the three-factor framework, these local correlations are gated by a global third signal, \textbf{Factor 3}, representing neuromodulation or reward.
-
-
 
 \subsection{Neural Activity and Notation}
 Following the framework established in the previous section, the neural response functions are formally treated as sums of Dirac distributions:
