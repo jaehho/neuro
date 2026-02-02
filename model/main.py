@@ -46,14 +46,14 @@ tau_minus = 20.0
 tau_e = 100.0
 
 # Weight rule
-w_max = 1.0
+w_max = 2.0
 w_init = 0.5
 eta_plus = 0.05
 eta_minus = 0.05
 
 # Inputs
 np.random.seed(0)
-pre_firing_rate = 0.1  # spikes/ms
+pre_firing_rate = 0.02  # spikes/ms
 pre_spikes = np.random.rand(n_steps) < (pre_firing_rate * dt)
 
 reward_signal = np.zeros(n_steps)
@@ -126,23 +126,24 @@ for t in range(1, n_steps):
 fig, axs = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
 
 axs[0].set_title("Neural Activity (Pre & Post)")
-axs[0].plot(time, v_post, label=r"Post $V_m$ (mV)", linewidth=1)
+axs[0].plot(time, v_post, label=r"Post $V_m$ (mV)", linewidth=1, color="blue")
 axs[0].axhline(V_thresh, linestyle="--", label=r"Threshold $\vartheta$")
 pre_spike_times = time[pre_spikes]
 axs[0].scatter(
     pre_spike_times,
-    np.ones_like(pre_spike_times) * E_L,
+    np.ones_like(pre_spike_times) * E_L - 1,
     marker="|",
     s=50,
     label=r"Pre spikes $\rho_j$",
+    color="red",
 )
 axs[0].legend(loc="upper right")
 axs[0].set_ylabel("Voltage (mV)")
-axs[0].set_ylim(-71, -50)
+axs[0].set_ylim(-72, -50)
 
 axs[1].set_title("Synaptic Traces")
-axs[1].plot(time, x_trace, label=r"Pre trace $x_j(t)$", alpha=0.6)
-axs[1].plot(time, y_trace, label=r"Post trace $y_i(t)$", alpha=0.6)
+axs[1].plot(time, x_trace, label=r"Pre trace $x_j(t)$", color="red")
+axs[1].plot(time, y_trace, label=r"Post trace $y_i(t)$", color="blue")
 axs[1].legend(loc="upper right")
 axs[1].set_ylabel("Trace magnitude")
 
@@ -154,7 +155,7 @@ axs[2].legend(loc="upper right")
 axs[2].set_ylabel("Magnitude")
 
 axs[3].set_title("Synaptic Weight Evolution")
-axs[3].plot(time, w, label=r"Weight $w_{ij}$", linewidth=2)
+axs[3].plot(time, w, label=r"Weight $w_{ij}$", color="black")
 axs[3].set_ylim(0, w_max)
 axs[3].set_ylabel("Weight")
 axs[3].set_xlabel("Time (ms)")
