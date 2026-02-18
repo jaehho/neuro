@@ -132,13 +132,19 @@ where $\eta_+, \eta_-$ are the learning rates. This linear dependence ensures th
 \subsection{Explicit State Variables}
 The continuous dynamics of the network are explicitly governed by a system of six coupled ordinary differential equations (ODEs). These state variables can be categorized by their respective temporal scales:
 
-\begin{enumerate} % TODO: Add the relevant equations next to each variable for clarity
-    \item \textbf{Membrane Potential ($V_i(t)$):} The fast microscopic integration of synaptic currents, evolving on the timescale $\tau_m$.
-    \item \textbf{Presynaptic Trace ($x_j(t)$):} A fast, low-pass filtered record of presynaptic spiking, tracking the LTP window ($\tau_+$).
-    \item \textbf{Postsynaptic Trace ($y_i(t)$):} A fast, low-pass filtered record of postsynaptic spiking, tracking the LTD window ($\tau_-$).
-    \item \textbf{Eligibility Trace ($E_{ij}(t)$):} A slow mesoscopic buffer bridging the STDP coincidence with delayed reward, decaying over $\tau_e$.
-    \item \textbf{Baseline Reward ($\bar{R}(t)$):} A slow macroscopic expectation of network performance, evolving over $\tau_{\bar{R}}$.
-    \item \textbf{Synaptic Weight ($w_{ij}(t)$):} The slow macroscopic efficacy of the connection, driven by the product of the eligibility trace and the reward prediction error.
+\begin{enumerate}
+    \item \textbf{Membrane Potential ($V_i(t)$):} The fast microscopic integration of currents. 
+    \[ \tau_m \dot{V}_i = -(V_i - E_L) + R_m I_{syn, i} + R_m I_{ext, i} \]
+    \item \textbf{Presynaptic Trace ($x_j(t)$):} A record of presynaptic spiking for LTP.
+    \[ \tau_+ \dot{x}_j = -x_j + \rho_j \]
+    \item \textbf{Postsynaptic Trace ($y_i(t)$):} A record of postsynaptic spiking for LTD.
+    \[ \tau_- \dot{y}_i = -y_i + \rho_i \]
+    \item \textbf{Eligibility Trace ($E_{ij}(t)$):} A slow mesoscopic buffer for credit assignment.
+    \[ \tau_e \dot{E}_{ij} = -E_{ij} + S_{ij} \]
+    \item \textbf{Baseline Reward ($\bar{R}(t)$):} A slow moving average of the reward signal.
+    \[ \tau_{\bar{R}} \dot{\bar{R}} = -\bar{R} + R \]
+    \item \textbf{Synaptic Weight ($w_{ij}(t)$):} The macroscopic efficacy of the connection.
+    \[ \dot{w}_{ij} = (R - \bar{R}) E_{ij} \]
 \end{enumerate}
 
 Note that the synaptic current $I_{syn, i}(t)$ is formally an algebraic integral of past spikes. While simulating the exponential kernel $\alpha(t)$ requires introducing an implicit differential equation, it is not treated as an independent state variable in this formal analysis.

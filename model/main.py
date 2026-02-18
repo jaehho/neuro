@@ -1,190 +1,400 @@
 """
-LIF neuron with Goal-Directed Reward-Modulated STDP.
+Extended simulation + plotting of (nearly) every modeled variable:
 
-CORRECTION APPLIED:
-The Eligibility Trace is now strictly Hebbian (positive).
-- If M is positive (Reward) and trace is high -> Weight UP.
-- If M is negative (Punishment) and trace is high -> Weight DOWN.
-This fixes the 'double negative' instability where high firing rates
-caused negative traces, inverting the punishment into reinforcement.
+States/derived:
+- V(t), refractory flag
+- pre_spike, post_spike
+- synaptic filter s(t), synaptic current I_syn(t)=w*s
+- external current/drive I_ext(t)=I_bias + noise term (recorded as an equivalent per-step current)
+- STDP traces x(t), y(t)
+- induction term S(t)
+- eligibility trace E(t)
+- weight w(t)
+- sliding-window rates r_pre(t), r_post(t), target 0.5*r_pre(t)
+- reward R(t), baseline Rbar(t), neuromodulator M(t)=R-Rbar
+
+Requires: numpy, matplotlib
 """
 
-import os
+from dataclasses import dataclass
 import numpy as np
+import math
 import matplotlib.pyplot as plt
 
-save_path = "simulation_results_goal_corrected.png"
 
-# Parameters
-dt = 0.1          # ms
-T_total = 10000.0  # ms
-time = np.arange(0, T_total, dt)
-n_steps = len(time)
+@dataclass
+class Params:
+    # Time
+    T: float = 20.0           # seconds
+    dt: float = 1e-4          # seconds (0.1 ms)
+    seed: int = 0
 
-# LIF parameters
-tau_m = 20.0
-E_L = -70.0
-V_reset = -70.0
-V_thresh = -54.0
-R_m = 50.0
-tau_ref = 5.0
+    # Presynaptic spikes (Poisson)
+    r_pre: float = 20.0       # Hz
 
-# Synapse
-tau_s = 5.0
+    # LIF neuron
+    tau_m: float = 0.02       # s
+    E_L: float = -65.0        # mV
+    V_reset: float = -70.0    # mV
+    theta: float = -50.0      # mV
+    tau_ref: float = 0.003    # s
 
-# Plasticity traces (ms)
-tau_plus = 20.0
-tau_minus = 20.0
-tau_e = 100.0
+    # Synapse (exponential kernel)
+    tau_s: float = 0.005      # s
 
-# Rate Estimation Parameters
-tau_rate = 500.0
+    # External drive/noise (Euler–Maruyama)
+    I_bias: float = 15.0      # "mV-equivalent" constant drive
+    sigma_V: float = 1.5      # mV / sqrt(s)
 
-# Weight rule
-w_max = 5.0
-w_init = 2.0  
-eta_plus = 0.05
-eta_minus = 0.05 
+    # STDP traces
+    tau_plus: float = 0.02    # s
+    tau_minus: float = 0.02   # s
 
-# Inputs
-np.random.seed(42)
-pre_firing_rate = 0.045  # ~45 Hz
-pre_spikes = np.random.rand(n_steps) < (pre_firing_rate * dt)
+    # Eligibility trace
+    tau_e: float = 0.5        # s
 
-# Arrays
-v_post = np.ones(n_steps) * E_L
-i_syn = np.zeros(n_steps)
-w = np.zeros(n_steps)
-w[0] = w_init
+    # Reward window + baseline
+    DeltaT: float = 0.5       # s (sliding window)
+    tau_Rbar: float = 5.0     # s
 
-x_trace = np.zeros(n_steps)
-y_trace = np.zeros(n_steps) # Kept for completeness, though less critical for Hebbian-only
-e_trace = np.zeros(n_steps)
-M = np.zeros(n_steps)
-post_spikes = np.zeros(n_steps, dtype=bool)
+    # Weight
+    w0: float = 2.0
+    wmax: float = 10.0
+    eta_plus: float = 1e-4
+    eta_minus: float = 1e-4
 
-# Visualization arrays
-r_pre_hist = np.zeros(n_steps)
-r_post_hist = np.zeros(n_steps)
+    # Optional extra scaling for dw/dt (useful for tuning)
+    kappa_w: float = 1.0
 
-# State
-ref_counter = 0
-r_pre_smooth = 0.0
-r_post_smooth = 0.0
+    # Trace normalization:
+    # True  -> traces jump by 1 on spike (common discrete implementation)
+    # False -> more literal tau dz/dt=-z+rho with rho≈spike/dt; jump amplitude differs by 1/tau
+    unit_jump_traces: bool = True
 
-# Simulation
-for t in range(1, n_steps):
+    # Recording
+    record_every: float = 0.001  # s (downsample, e.g. 1 ms)
 
-    # 1. Update Firing Rate Estimates
-    r_pre_smooth += dt * (-r_pre_smooth / tau_rate)
-    r_post_smooth += dt * (-r_post_smooth / tau_rate)
-    
-    if pre_spikes[t-1]:
-        r_pre_smooth += 1.0 / tau_rate
 
-    # 2. Calculate Goal-Directed Reward
-    target_rate = 0.5 * r_pre_smooth
-    rate_error = abs(r_post_smooth - target_rate)
-    
-    # Gaussian Reward Profile
-    sigma = 0.005 
-    reward_val = 2.0 * np.exp(-(rate_error**2) / (2 * sigma**2)) - 1.0
-    M[t] = reward_val
+def simulate(p: Params):
+    rng = np.random.default_rng(p.seed)
+    n = int(p.T / p.dt)
 
-    # 3. LIF Dynamics
-    x_trace[t] = x_trace[t - 1] + dt * (-x_trace[t - 1] / tau_plus)
-    y_trace[t] = y_trace[t - 1] + dt * (-y_trace[t - 1] / tau_minus)
+    # State variables
+    V = p.E_L
+    ref_remaining = 0.0
+    s = 0.0
+    x = 0.0
+    y = 0.0
+    E = 0.0
+    w = p.w0
+    Rbar = 0.0
 
-    if pre_spikes[t - 1]:
-        x_trace[t] += 1.0
-        i_syn[t - 1] += w[t - 1]
+    # Sliding-window rates via ring buffers
+    win = max(1, int(p.DeltaT / p.dt))
+    pre_buf = np.zeros(win, dtype=np.int8)
+    post_buf = np.zeros(win, dtype=np.int8)
+    pre_sum = 0
+    post_sum = 0
+    buf_idx = 0
 
-    i_syn[t] = i_syn[t - 1] + dt * (-i_syn[t - 1] / tau_s)
+    # Downsampled recordings
+    rec_step = max(1, int(p.record_every / p.dt))
+    m = n // rec_step + 2
 
-    if ref_counter > 0:
-        v_post[t] = V_reset
-        ref_counter -= 1
-    else:
-        dv = (-(v_post[t - 1] - E_L) + R_m * i_syn[t]) / tau_m
-        v_post[t] = v_post[t - 1] + dt * dv
+    rec = {k: np.zeros(m) for k in [
+        "t", "V", "w", "s", "I_syn", "I_ext_equiv", "x", "y", "S", "E",
+        "r_pre", "r_post", "R", "Rbar", "M", "Aplus", "Aminus",
+        "pre_spike_bin", "post_spike_bin", "is_refractory"
+    ]}
 
-        if v_post[t] >= V_thresh:
-            v_post[t] = 0.0
-            post_spikes[t] = True
-            ref_counter = int(tau_ref / dt)
-            y_trace[t] += 1.0
-            r_post_smooth += 1.0 / tau_rate
+    pre_spike_times = []
+    post_spike_times = []
+    k = 0
 
-    r_pre_hist[t] = r_pre_smooth
-    r_post_hist[t] = r_post_smooth
+    def trace_update(z, tau, spike):
+        if p.unit_jump_traces:
+            return z + p.dt * (-z / tau) + spike
+        else:
+            return z + p.dt * (-z / tau) + spike * (1.0 / tau)
 
-    # 4. Weight Update (CORRECTED)
-    # ----------------------------------------
-    A_plus = eta_plus * (w_max - w[t - 1])
-    
-    # We remove the A_minus term from the eligibility trace. 
-    # The eligibility trace should effectively be |Correlation|.
-    # The Reward Sign (+/-) handles the Direction (LTP/LTD).
-    
-    S_ij = 0.0
-    if post_spikes[t]:
-        S_ij += A_plus * x_trace[t]  # Hebbian coincidence only
-    
-    # NOTE: The "Depression" part (Pre-after-Post) is removed from eligibility.
-    # This ensures e_trace stays positive.
-    # if pre_spikes[t]:
-    #    S_ij -= A_minus * y_trace[t]
+    for step in range(n):
+        t = step * p.dt
 
-    de = (-e_trace[t - 1] / tau_e) + (S_ij / dt)
-    e_trace[t] = e_trace[t - 1] + dt * de
+        # Presynaptic Poisson spike
+        pre_spike = 1 if (rng.random() < p.r_pre * p.dt) else 0
+        if pre_spike:
+            pre_spike_times.append(t)
 
-    # Update weight
-    w[t] = w[t - 1] + dt * (M[t] * e_trace[t])
-    w[t] = np.clip(w[t], 0.0, w_max)
+        # Synapse filter and syn current
+        s = trace_update(s, p.tau_s, pre_spike)
+        I_syn = w * s
 
-# Plotting
-fig, axs = plt.subplots(5, 1, figsize=(10, 14), sharex=True)
+        # External noise term as a "current-equivalent" increment:
+        # dV_sto = sigma_V * sqrt(dt) * N(0,1)
+        # In the voltage ODE form: dV = (dt/tau_m)*R_m*I_ext + ...
+        # Here we record the per-step effective contribution converted to an equivalent current term:
+        # I_noise_equiv such that (dt/tau_m)*I_noise_equiv = dV_sto  => I_noise_equiv = dV_sto * tau_m / dt
+        dV_sto = p.sigma_V * math.sqrt(p.dt) * rng.standard_normal()
+        I_noise_equiv = dV_sto * p.tau_m / p.dt
+        I_ext_equiv = p.I_bias + I_noise_equiv  # "mV-equivalent current" total external term
 
-axs[0].set_title("Neural Activity")
-axs[0].plot(time, v_post, label="Post Vm", linewidth=0.5, color="blue")
-axs[0].axhline(V_thresh, linestyle="--", color="gray", alpha=0.5)
-pre_spike_times = time[pre_spikes]
-axs[0].scatter(
-    pre_spike_times,
-    np.ones_like(pre_spike_times) * E_L - 1,
-    marker="|",
-    s=50,
-    label=r"Pre spikes $\rho_j$",
-    color="red",
-)
-axs[0].set_ylabel("mV")
+        # Postsynaptic LIF update
+        post_spike = 0
+        is_refractory = 1 if ref_remaining > 0.0 else 0
 
-axs[0].legend()
+        if ref_remaining <= 0.0:
+            dV_det = (p.dt / p.tau_m) * (-(V - p.E_L) + I_syn + p.I_bias)
+            V_new = V + dV_det + dV_sto
 
-axs[1].set_title("Goal Tracking: Firing Rates")
-axs[1].plot(time, r_post_hist, label="Actual Post Rate", color="blue", linewidth=2)
-axs[1].plot(time, r_pre_hist * 0.5, label="Target (0.5 * Pre Rate)", color="green", linestyle="--", linewidth=2)
-axs[1].set_ylabel("Rate")
-axs[1].legend()
-axs[1].grid(True, alpha=0.3)
+            if V < p.theta and V_new >= p.theta:
+                post_spike = 1
+                post_spike_times.append(t)
+                V = p.V_reset
+                ref_remaining = p.tau_ref
+            else:
+                V = V_new
+        else:
+            ref_remaining -= p.dt
+            V = p.V_reset
 
-axs[2].set_title("Reward Signal (M)")
-axs[2].plot(time, M, color="purple", linewidth=1)
-axs[2].fill_between(time, M, 0, where=(M>0), color='green', alpha=0.3, label="Reward")
-axs[2].fill_between(time, M, 0, where=(M<0), color='red', alpha=0.3, label="Punishment")
-axs[2].set_ylabel("Amplitude")
-axs[2].legend()
+        # STDP traces
+        x = trace_update(x, p.tau_plus, pre_spike)
+        y = trace_update(y, p.tau_minus, post_spike)
 
-axs[3].set_title("Eligibility Trace (Positive Only)")
-axs[3].plot(time, e_trace, color="orange", linewidth=1)
-axs[3].set_ylabel("Magnitude")
+        # Weight-dependent STDP amplitudes
+        Aplus = p.eta_plus * (p.wmax - w)
+        Aminus = p.eta_minus * w
 
-axs[4].set_title("Synaptic Weight Evolution")
-axs[4].plot(time, w, color="black", linewidth=2)
-axs[4].set_ylim(0, w_max)
-axs[4].set_ylabel("Weight")
-axs[4].set_xlabel("Time (ms)")
+        # Spike trains as Dirac deltas approximated by spikes per bin: rho ≈ spike/dt
+        rho_pre = pre_spike / p.dt
+        rho_post = post_spike / p.dt
 
-plt.tight_layout()
-plt.savefig(save_path)
-plt.show()
+        # Induction term
+        S = Aplus * x * rho_post - Aminus * y * rho_pre
+
+        # Eligibility
+        E += (p.dt / p.tau_e) * (-E + S)
+
+        # Sliding-window rates
+        pre_sum -= int(pre_buf[buf_idx])
+        post_sum -= int(post_buf[buf_idx])
+        pre_buf[buf_idx] = pre_spike
+        post_buf[buf_idx] = post_spike
+        pre_sum += pre_spike
+        post_sum += post_spike
+        buf_idx = (buf_idx + 1) % win
+
+        r_pre_t = pre_sum / (win * p.dt)
+        r_post_t = post_sum / (win * p.dt)
+
+        # Reward + baseline + neuromodulator
+        R = - (r_post_t - 0.5 * r_pre_t) ** 2
+        Rbar += (p.dt / p.tau_Rbar) * (-Rbar + R)
+        M = R - Rbar
+
+        # Weight update (clamped)
+        w += p.kappa_w * p.dt * M * E
+        w = min(p.wmax, max(0.0, w))
+
+        # Record
+        if step % rec_step == 0:
+            rec["t"][k] = t
+            rec["V"][k] = V
+            rec["w"][k] = w
+            rec["s"][k] = s
+            rec["I_syn"][k] = I_syn
+            rec["I_ext_equiv"][k] = I_ext_equiv
+            rec["x"][k] = x
+            rec["y"][k] = y
+            rec["S"][k] = S
+            rec["E"][k] = E
+            rec["r_pre"][k] = r_pre_t
+            rec["r_post"][k] = r_post_t
+            rec["R"][k] = R
+            rec["Rbar"][k] = Rbar
+            rec["M"][k] = M
+            rec["Aplus"][k] = Aplus
+            rec["Aminus"][k] = Aminus
+            rec["pre_spike_bin"][k] = pre_spike
+            rec["post_spike_bin"][k] = post_spike
+            rec["is_refractory"][k] = is_refractory
+            k += 1
+
+    # Trim arrays
+    for kk in rec:
+        rec[kk] = rec[kk][:k]
+
+    rec["pre_spike_times"] = np.array(pre_spike_times)
+    rec["post_spike_times"] = np.array(post_spike_times)
+    return rec
+
+# Updated single-figure plotting:
+# - STDP induction S(t) and eligibility E(t) plotted in separate panels
+# - Weight-dependent STDP scaling removed (A+, A− not plotted)
+
+def plot_all_in_one_figure(rec, p):
+    import matplotlib.pyplot as plt
+
+    # ---- Panel toggles ----
+    PANELS = {
+        "raster": True,
+        "voltage": True,
+        "refractory": False,
+        "synapse": True,
+        "external_current": False,
+        "stdp_traces": True,
+        "induction": True,        # S(t)
+        "eligibility": True,      # E(t)
+        "rates": True,
+        "reward": True,
+        "weight": True,
+        "binned_spikes": False,
+    }
+
+    t = rec["t"]
+
+    active = [k for k, v in PANELS.items() if v]
+    if len(active) == 0:
+        raise ValueError("No panels enabled. Set at least one entry in PANELS to True.")
+
+    fig, axs = plt.subplots(len(active), 1, figsize=(14, 2.2 * len(active)), sharex=True)
+    if len(active) == 1:
+        axs = [axs]
+
+    i = 0
+
+    # ---- 1) Raster ----
+    if PANELS["raster"]:
+        axs[i].eventplot([rec["pre_spike_times"], rec["post_spike_times"]],
+                         lineoffsets=[1, 0], linelengths=0.8)
+        axs[i].set_yticks([0, 1])
+        axs[i].set_yticklabels(["post i", "pre j"])
+        axs[i].set_title("Spike times")
+        i += 1
+
+    # ---- 2) Membrane voltage ----
+    if PANELS["voltage"]:
+        axs[i].plot(t, rec["V"])
+        axs[i].axhline(p.theta, linestyle="--")
+        axs[i].axhline(p.V_reset, linestyle=":")
+        axs[i].set_ylabel("mV")
+        axs[i].set_title("Membrane potential V(t)")
+        i += 1
+
+    # ---- 3) Refractory indicator ----
+    if PANELS["refractory"]:
+        axs[i].plot(t, rec["is_refractory"])
+        axs[i].set_title("Refractory state")
+        i += 1
+
+    # ---- 4) Synapse filter + syn current ----
+    if PANELS["synapse"]:
+        axs[i].plot(t, rec["s"], label="s(t)")
+        axs[i].plot(t, rec["I_syn"], label="I_syn(t)")
+        axs[i].legend(loc="upper right")
+        axs[i].set_title("Synaptic dynamics")
+        i += 1
+
+    # ---- 5) External current ----
+    if PANELS["external_current"]:
+        axs[i].plot(t, rec["I_ext_equiv"])
+        axs[i].set_title("External input I_ext(t)")
+        i += 1
+
+    # ---- 6) STDP traces ----
+    if PANELS["stdp_traces"]:
+        axs[i].plot(t, rec["x"], label="x (pre)")
+        axs[i].plot(t, rec["y"], label="y (post)")
+        axs[i].legend(loc="upper right")
+        axs[i].set_title("STDP traces")
+        i += 1
+
+    # ---- 7) Induction term S(t) ----
+    if PANELS["induction"]:
+        axs[i].plot(t, rec["S"])
+        axs[i].set_title("STDP induction term S(t)")
+        i += 1
+
+    # ---- 8) Eligibility trace E(t) ----
+    if PANELS["eligibility"]:
+        axs[i].plot(t, rec["E"])
+        axs[i].set_title("Eligibility trace E(t)")
+        i += 1
+
+    # ---- 9) Sliding-window firing rates ----
+    if PANELS["rates"]:
+        axs[i].plot(t, rec["r_pre"], label="r_pre")
+        axs[i].plot(t, rec["r_post"], label="r_post")
+        axs[i].plot(t, 0.5 * rec["r_pre"], linestyle="--", label="target")
+        axs[i].legend(loc="upper right")
+        axs[i].set_ylabel("Hz")
+        axs[i].set_title("Firing rates")
+        i += 1
+
+    # ---- 10) Reward dynamics ----
+    if PANELS["reward"]:
+        axs[i].plot(t, rec["R"], label="R")
+        axs[i].plot(t, rec["Rbar"], label="Rbar")
+        axs[i].plot(t, rec["M"], label="M")
+        axs[i].legend(loc="upper right")
+        axs[i].set_title("Reward, baseline, neuromodulator")
+        i += 1
+
+    # ---- 11) Weight ----
+    if PANELS["weight"]:
+        axs[i].plot(t, rec["w"])
+        axs[i].set_title("Synaptic weight w(t)")
+        i += 1
+
+    # ---- 12) Binned spikes ----
+    if PANELS["binned_spikes"]:
+        axs[i].plot(t, rec["pre_spike_bin"], label="pre")
+        axs[i].plot(t, rec["post_spike_bin"], label="post")
+        axs[i].legend(loc="upper right")
+        axs[i].set_title("Binned spikes")
+        i += 1
+
+    axs[-1].set_xlabel("time (s)")
+    plt.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    p = Params(
+        T=20.0,
+        dt=1e-4,
+        record_every=1e-4,
+        seed=1,
+
+        r_pre=20.0,
+
+        tau_m=0.02,
+        E_L=-65.0,
+        V_reset=-70.0,
+        theta=-50.0,
+        tau_ref=0.003,
+
+        tau_s=0.005,
+
+        I_bias=15.0,
+        sigma_V=1.5,
+
+        tau_plus=0.02,
+        tau_minus=0.02,
+
+        tau_e=0.5,
+
+        DeltaT=0.5,
+        tau_Rbar=5.0,
+
+        w0=2.0,
+        wmax=10.0,
+        eta_plus=1e-4,
+        eta_minus=1e-4,
+        kappa_w=1.0,
+
+        unit_jump_traces=True,
+    )
+
+    rec = simulate(p)
+    plot_all_in_one_figure(rec, p)
