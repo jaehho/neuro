@@ -34,7 +34,7 @@ The state of a postsynaptic neuron $i$ is described by its membrane potential $V
 \begin{equation} \label{eq:lif_voltage}
     \tau_m \frac{dV_i(t)}{dt} = -(V_i(t) - E_L) + R_m I_{syn, i}(t) + R_m I_{ext, i}(t),
 \end{equation}
-where $\tau_m = R_m C_m$ represents the membrane time constant. In cortical pyramidal neurons, $\tau_m$ typically lies in the range of 10--20 ms \parencite{dayan_theoretical_2001}. The term $I_{syn, i}(t)$ represents the total synaptic current received from presynaptic neurons, and $I_{ext, i}(t)$ accounts for any external background currents or noise.
+where $\tau_m = R_m C_m$ represents the membrane time constant. In cortical pyramidal neurons, $\tau_m$ typically lies in the range of 10--20 ms \parencite{dayan_theoretical_2001}. The term $I_{syn, i}(t)$ represents the total synaptic current received from presynaptic neurons, and $I_{ext, i}(t)$ accounts for any external background currents or noise, typically modeled as a Gaussian white noise process.
 
 \subsection{Synaptic Interaction}
 The synaptic current $I_{syn, i}(t)$ is determined by the activity of the presynaptic population. Let the spike train of a presynaptic neuron $j$ be denoted by $\rho_j(t) = \sum_k \delta(t - t_j^k)$. The specific mathematical definition of these spike times is provided in Section \ref{sec:spike_gen}.
@@ -44,9 +44,9 @@ The arrival of a spike from neuron $j$ induces a transient change in the input t
 \begin{equation} \label{eq:synaptic_current}
     I_{syn, i}(t) = \sum_{j} w_{ij} \int_{-\infty}^{t} \alpha(t - s) \rho_j(s) \, ds,
 \end{equation}
-where $\alpha(t)$ is the postsynaptic current (PSC) kernel. Following \textcite{dayan_theoretical_2001}, this is modeled as an exponential decay function $\alpha(t) = \frac{1}{\tau_s} e^{-t/\tau_s} \Theta(t)$, where $\Theta(t)$ is the Heaviside step function. The synaptic time constant $\tau_s$ typically ranges from 2--10 ms for fast AMPA/GABA receptors \parencite{destexhe_kinetic_1998}-.
+where $\alpha(t)$ is the postsynaptic current (PSC) kernel. Following \textcite{dayan_theoretical_2001}, this is modeled as an exponential decay function $\alpha(t) = \frac{1}{\tau_s} e^{-t/\tau_s} \Theta(t)$, where $\Theta(t)$ is the Heaviside step function. The synaptic time constant $\tau_s$ typically ranges from 2--10 ms for fast AMPA/GABA receptors \parencite{destexhe_kinetic_1998}.
 
-0\subsection{Spike Generation Mechanism} \label{sec:spike_gen}
+\subsection{Spike Generation Mechanism} \label{sec:spike_gen}
 The continuous voltage dynamics defined above give rise to discrete events. Mathematically, a spike is not a duration but a single point in time $t_i^k$. This is defined as the moment the membrane potential crosses a fixed threshold $\vartheta$ from below:
 \begin{equation} \label{eq:threshold}
     t_i^k : V_i(t_i^k) = \vartheta \quad \text{and} \quad \frac{dV_i}{dt}\bigg|_{t=t_i^k} > 0.
@@ -91,17 +91,32 @@ The STDP induction term $S_{ij}(t)$ combines Long-Term Potentiation (LTP) and Lo
 \begin{equation}
     S_{ij}(t) = \underbrace{A_+(w_{ij}) x_j(t) \rho_i(t)}_{\text{LTP contribution}} - \underbrace{A_-(w_{ij}) y_i(t) \rho_j(t)}_{\text{LTD contribution}}.
 \end{equation}
+where $A_+(w_{ij})$ and $A_-(w_{ij})$ are weight-dependent scaling functions that modulate the amplitude of potentiation and depression, respectively (detailed in Section \ref{sec:weight_constraints}).
 
 \subsection{Global Dynamics: Neuromodulated Update}
 The actual change in synaptic weight is governed by a global neuromodulatory signal $M(t)$:
 \begin{equation}
     \frac{dw_{ij}(t)}{dt} = M(t) E_{ij}(t).
 \end{equation}
-The signal $M(t)$ is modeled as a Reward Prediction Error (RPE), calculated as the difference between the instantaneous reward $R(t)$ and a baseline expectation $\bar{R}(t)$:
+The objective of the learning network is to drive the postsynaptic firing rate to approximate exactly half of the presynaptic firing rate. To formulate this reward, we define the instantaneous firing rates, $r_j(t)$ and $r_i(t)$, by counting the number of spikes occurring within a sliding time window of length $\Delta T$ immediately preceding time $t$. Given the spike trains defined as sums of Dirac delta functions, these rates are evaluated as:
+\begin{align}
+    r_j(t) &= \frac{1}{\Delta T} \int_{t-\Delta T}^{t} \rho_j(s) \, ds, \\
+    r_i(t) &= \frac{1}{\Delta T} \int_{t-\Delta T}^{t} \rho_i(s) \, ds.
+\end{align}
+
+The instantaneous reward $R(t)$ is defined as a penalty based on the squared deviation of the actual postsynaptic rate from the target rate:
+\begin{equation}
+    R(t) = - \left( r_i(t) - \frac{1}{2}r_j(t) \right)^2.
+\end{equation}
+
+The signal $M(t)$ is modeled as a Reward Prediction Error (RPE), calculated as the difference between this instantaneous reward $R(t)$ and a baseline expectation $\bar{R}(t)$:
 \begin{equation}
     M(t) = R(t) - \bar{R}(t).
 \end{equation}
-Here, $\bar{R}(t)$ serves as a reference point, allowing for bidirectional regulation of synaptic weights \parencite{fremaux_neuromodulated_2016}.
+Here, $\bar{R}(t)$ serves as a reference point, allowing for bidirectional regulation of synaptic weights \parencite{fremaux_neuromodulated_2016}. To ensure $M(t)$ functions as a temporal contrast, $\bar{R}(t)$ is calculated as a moving average of the reward, evolving with a slow time constant $\tau_{\bar{R}}$:
+\begin{equation}
+    \tau_{\bar{R}} \frac{d\bar{R}(t)}{dt} = -\bar{R}(t) + R(t).
+\end{equation}
 
 \subsection{Weight Constraints and Stability} \label{sec:weight_constraints}
 The synaptic weight $w_{ij}$ represents the efficacy of the connection from neuron $j$ to neuron $i$. To prevent unbounded growth during the learning process, we constrain the weight to a closed interval $w_{ij} \in [0, w_{\text{max}}]$. The parameter $w_{\text{max}}$ represents the physiological saturation limit of synaptic efficacy.
@@ -111,6 +126,68 @@ We enforce these bounds using "soft bound" dependencies in the scaling functions
     A_+(w_{ij}) = \eta_+ (w_{\text{max}} - w_{ij}) \quad \text{and} \quad A_-(w_{ij}) = \eta_- w_{ij},
 \end{equation}
 where $\eta_+, \eta_-$ are the learning rates. This linear dependence ensures that the rate of weight change drops to zero as the weight approaches either limit ($0$ or $w_{\text{max}}$), naturally stabilizing the dynamics \parencite{gerstner_neuronal_2014}.
+
+\section{Dynamical System Analysis}
+
+\subsection{Explicit State Variables}
+The continuous dynamics of the network are explicitly governed by a system of six coupled ordinary differential equations (ODEs). These state variables can be categorized by their respective temporal scales:
+
+\begin{enumerate} % TODO: Add the relevant equations next to each variable for clarity
+    \item \textbf{Membrane Potential ($V_i(t)$):} The fast microscopic integration of synaptic currents, evolving on the timescale $\tau_m$.
+    \item \textbf{Presynaptic Trace ($x_j(t)$):} A fast, low-pass filtered record of presynaptic spiking, tracking the LTP window ($\tau_+$).
+    \item \textbf{Postsynaptic Trace ($y_i(t)$):} A fast, low-pass filtered record of postsynaptic spiking, tracking the LTD window ($\tau_-$).
+    \item \textbf{Eligibility Trace ($E_{ij}(t)$):} A slow mesoscopic buffer bridging the STDP coincidence with delayed reward, decaying over $\tau_e$.
+    \item \textbf{Baseline Reward ($\bar{R}(t)$):} A slow macroscopic expectation of network performance, evolving over $\tau_{\bar{R}}$.
+    \item \textbf{Synaptic Weight ($w_{ij}(t)$):} The slow macroscopic efficacy of the connection, driven by the product of the eligibility trace and the reward prediction error.
+\end{enumerate}
+
+Note that the synaptic current $I_{syn, i}(t)$ is formally an algebraic integral of past spikes. While simulating the exponential kernel $\alpha(t)$ requires introducing an implicit differential equation, it is not treated as an independent state variable in this formal analysis.
+
+\subsection{Macroscopic Reduction via Time-Scale Separation}
+The six-variable system is analytically intractable due to the highly non-linear, discontinuous resets of the spiking mechanism. Because $\tau_m, \tau_+$, and $\tau_-$ (typically 10--40 ms) are generally orders of magnitude faster than the learning variables $\tau_e$ and $\tau_{\bar{R}}$ (hundreds of milliseconds to seconds), we can apply adiabatic elimination (a quasi-steady-state approximation) to average out the fast spiking dynamics.
+
+First, we replace the discrete LIF neuron with a continuous rate-based approximation. We assume presynaptic spikes follow a Poisson process with rate $r_j(t)$, and postsynaptic activity is governed by an algebraic transfer function $r_i(t) = f(w_{ij}(t) r_j(t))$. This eliminates $V_i(t)$ from the state space.
+
+Next, we replace the fast-decaying STDP traces, $x_j(t)$ and $y_i(t)$, with their steady-state expected values. For Poisson spike trains, these averages are proportional to the instantaneous firing rates: $\langle x_j \rangle = \tau_+ r_j(t)$ and $\langle y_i \rangle = \tau_- r_i(t)$. Substituting these into the STDP induction term yields the rate-averaged induction:
+\begin{equation} \label{eq:rate_averaged_stdp}
+    \langle S_{ij}(t) \rangle = r_i(t) r_j(t) \big[ A_+(w_{ij})\tau_+ - A_-(w_{ij})\tau_- \big].
+\end{equation}
+
+This reduction leaves a closed, three-variable macroscopic system governing the slow learning dynamics:
+\begin{align}
+    \tau_e \frac{dE_{ij}(t)}{dt} &= -E_{ij}(t) + \langle S_{ij}(t) \rangle, \label{eq:reduced_E} \\
+    \tau_{\bar{R}} \frac{d\bar{R}(t)}{dt} &= -\bar{R}(t) + R(t), \label{eq:reduced_Rbar} \\
+    \frac{dw_{ij}(t)}{dt} &= (R(t) - \bar{R}(t)) E_{ij}(t). \label{eq:reduced_w}
+\end{align}
+
+\subsection{Fixed Point Analysis}
+To determine the steady-state behavior of the learning network, we identify the fixed points where the state variables cease to evolve ($\frac{dE_{ij}}{dt} = \frac{d\bar{R}}{dt} = \frac{dw_{ij}}{dt} = 0$).
+
+Setting \eqref{eq:reduced_Rbar} to zero trivially yields the reward expectation equilibrium:
+\begin{equation}
+    \bar{R}^* = R^*.
+\end{equation}
+At steady state, the baseline expectation perfectly matches the instantaneous reward, effectively driving the global neuromodulatory signal $M(t)$ to zero.
+
+For the synaptic weight to stabilize ($\frac{dw_{ij}}{dt} = 0$), the product $(R^* - \bar{R}^*) E_{ij}^*$ must vanish. This implies the system stops learning either when the reward prediction error goes to zero (a global halt condition) or when the local eligibility trace decays to zero. 
+
+Setting $\frac{dE_{ij}}{dt} = 0$ requires the STDP induction term $\langle S_{ij} \rangle^*$ to vanish. Assuming non-zero firing rates ($r_i > 0, r_j > 0$), we set the bracketed term in \eqref{eq:rate_averaged_stdp} to zero:
+\begin{equation}
+    A_+(w_{ij}^*)\tau_+ - A_-(w_{ij}^*)\tau_- = 0.
+\end{equation}
+Substituting the soft-bound scaling functions $A_+(w_{ij}) = \eta_+ (w_{\text{max}} - w_{ij})$ and $A_-(w_{ij}) = \eta_- w_{ij}$, we obtain:
+\begin{equation}
+    \eta_+ (w_{\text{max}} - w_{ij}^*)\tau_+ - \eta_- w_{ij}^*\tau_- = 0.
+\end{equation}
+Rearranging to solve for $w_{ij}^*$:
+\begin{equation}
+    \eta_+ w_{\text{max}} \tau_+ = w_{ij}^* (\eta_+ \tau_+ + \eta_- \tau_-).
+\end{equation}
+\begin{equation} \label{eq:fixed_point_w}
+    w_{ij}^* = w_{\text{max}} \frac{\eta_+ \tau_+}{\eta_+ \tau_+ + \eta_- \tau_-}.
+\end{equation}
+
+This analytical fixed point reveals that, independent of the global reward state, the local synaptic weight naturally gravitates toward a specific fraction of the physiological maximum $w_{\text{max}}$. This ratio is strictly defined by the balance between the LTP/LTD learning rates ($\eta_+, \eta_-$) and their respective temporal coincidence windows ($\tau_+, \tau_-$).
 
 \printbibliography
 
