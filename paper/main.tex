@@ -5,21 +5,17 @@
 \usepackage{geometry}
 \usepackage{setspace}
 \usepackage{graphicx}
-\usepackage{booktabs}   % Professional table formatting
+\usepackage{booktabs}
 \usepackage{csquotes}
 
-% Biblatex setup
 \usepackage[style=numeric-comp, backend=biber, sorting=none]{biblatex}
 \addbibresource{references.bib}
 
-% Hyperref should generally be loaded last
 \usepackage[colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue]{hyperref}
 
-% Layout settings for readability
 \geometry{a4paper, margin=1in}
 \linespread{1.15}
 
-% Theorem/Definition styles
 \theoremstyle{definition}
 \newtheorem{definition}{Definition}
 
@@ -30,7 +26,8 @@
 We consider a minimal circuit consisting of a single presynaptic neuron connected to a single postsynaptic neuron through a unidirectional synapse of weight $w$. This section specifies the dynamics governing the postsynaptic membrane potential, the synaptic coupling, and the generation of spikes.
 
 \subsection{Membrane Potential Dynamics}
-The postsynaptic neuron is modeled as a Leaky Integrate-and-Fire (LIF) unit, a standard reduction of the Hodgkin--Huxley formalism that retains sub-threshold integration and thresholding \parencite{gerstnerNeuronalDynamicsSingle2014}. Its membrane potential $V(t)$ evolves according to the conservation of current across the cell membrane, modeled as a parallel RC circuit with leakage resistance $R_m$ and membrane capacitance $C_m$ \parencite{dayanTheoreticalNeuroscienceComputational2001}:
+The postsynaptic neuron is modeled as a Leaky Integrate-and-Fire (LIF) unit, a standard reduction of the Hodgkin--Huxley formalism \parencite{hodgkinQuantitativeDescriptionMembrane1952} that retains sub-threshold integration and thresholding \parencite{gerstnerNeuronalDynamicsSingle2014}.
+Its membrane potential $V(t)$ evolves according to the conservation of current across the cell membrane, modeled as a parallel RC circuit with leakage resistance $R_m$ and membrane capacitance $C_m$ \parencite{dayanTheoreticalNeuroscienceComputational2001}:
 \begin{equation} \label{eq:lif_voltage}
     \tau_m \frac{dV(t)}{dt} = -(V(t) - E_L) + R_m I_{\mathrm{syn}}(t) + R_m I_{\mathrm{ext}}(t),
 \end{equation}
@@ -55,11 +52,11 @@ The synaptic current is determined by the presynaptic spike train filtered throu
 \begin{equation} \label{eq:synaptic_current}
     I_{\mathrm{syn}}(t) = w \int_{-\infty}^{t} \alpha(t - s)\, \rho_{\mathrm{pre}}(s) \, ds,
 \end{equation}
-where $\alpha(t) = \tau_s^{-1} e^{-t/\tau_s}\, \Theta(t)$ is an exponential PSC kernel with synaptic time constant $\tau_s$ and $\Theta(t)$ the Heaviside step function \parencite{dayanTheoreticalNeuroscienceComputational2001}.
+where $\alpha(t) = \tau_s^{-1} e^{-t/\tau_s}\, \Theta(t)$ is an exponential PSC kernel with synaptic time constant $\tau_s$ and $\Theta(t)$ the Heaviside step function \parencite{dayanTheoreticalNeuroscienceComputational2001,kochMethodsNeuronalModeling1998}.
 
 \section{Three-Factor Plasticity Model}
 
-We now turn to the evolution of the synaptic weight $w$. The plasticity rule belongs to the class of \textit{three-factor learning rules} reviewed by \textcite{fremauxNeuromodulatedSpikeTimingDependentPlasticity2016}. In standard Spike-Timing-Dependent Plasticity (STDP), weight changes depend on the correlation of pre- and postsynaptic spike times; three-factor rules gate this local signal with a global neuromodulatory factor representing reward or error feedback.
+We now turn to the evolution of the synaptic weight $w$. The plasticity rule belongs to the class of \textit{three-factor learning rules} reviewed by \textcite{fremauxNeuromodulatedSpikeTimingDependentPlasticity2016} and \textcite{gerstnerEligibilityTracesPlasticity2018}. In standard Spike-Timing-Dependent Plasticity (STDP), weight changes depend on the correlation of pre- and postsynaptic spike times; three-factor rules gate this local signal with a global neuromodulatory factor representing reward or error feedback.
 
 \subsection{Weight-Dependent Scaling and Stability} \label{sec:weight_constraints}
 Before specifying the plasticity dynamics, we define the weight-dependent scaling functions that appear in the learning rule. The weight $w$ represents the efficacy of the synapse from the presynaptic to the postsynaptic neuron and is constrained to the interval $[0, w_{\mathrm{max}}]$, where $w_{\mathrm{max}}$ is a physiological saturation limit.
@@ -71,18 +68,20 @@ The amplitudes of potentiation and depression are modulated by soft-bound functi
 where $\eta_+$ and $\eta_-$ are learning rates. These linear dependencies cause the rate of weight change to diminish as $w$ approaches either boundary. This prevents unbounded growth of the weight and biases the dynamics toward the interior of $[0, w_{\mathrm{max}}]$. However, because the full weight update (defined below in \eqref{eq:weight_update}) involves a signed modulation signal, the soft bounds alone do not strictly guarantee $w \in [0, w_{\mathrm{max}}]$; in practice, a hard clipping step $w \leftarrow \max(0, \min(w, w_{\mathrm{max}}))$ may be applied after each update.
 
 \subsection{Local Dynamics: The Eligibility Trace}
-A central feature of this model is that coincident pre- and postsynaptic spikes create a temporary memory called the \textit{eligibility trace} $E(t)$ \parencite{fremauxNeuromodulatedSpikeTimingDependentPlasticity2016}. This trace allows the synapse to bridge the temporal gap between millisecond-scale neural activity and delayed reward signals. It evolves as:
+A central feature of this model is that coincident pre- and postsynaptic spikes create a temporary memory called the \textit{eligibility trace} $E(t)$ \parencite{gerstnerEligibilityTracesPlasticity2018,fremauxNeuromodulatedSpikeTimingDependentPlasticity2016}.
+This trace allows the synapse to bridge the temporal gap between millisecond-scale neural activity and delayed reward signals. It evolves as:
 \begin{equation} \label{eq:eligibility}
     \tau_e \frac{dE(t)}{dt} = -E(t) + S(t),
 \end{equation}
-where $\tau_e$ is a decay time constant, typically on the order of hundreds of milliseconds to seconds for reinforcement learning tasks \parencite{gerstnerNeuronalDynamicsSingle2014}.
+where $\tau_e$ is a decay time constant, typically on the order of hundreds of milliseconds to seconds for reinforcement learning tasks \parencite{gerstnerEligibilityTracesPlasticity2018}.
 
 The driving term $S(t)$ captures the instantaneous STDP induction. To define it, we introduce filtered spike-history variables for each neuron:
 \begin{align}
     \tau_+ \frac{dx_{\mathrm{pre}}(t)}{dt} &= -x_{\mathrm{pre}}(t) + \rho_{\mathrm{pre}}(t), \label{eq:pre_trace} \\
     \tau_- \frac{dy_{\mathrm{post}}(t)}{dt} &= -y_{\mathrm{post}}(t) + \rho_{\mathrm{post}}(t), \label{eq:post_trace}
 \end{align}
-where $\tau_+$ and $\tau_-$ set the widths of the potentiation and depression windows, respectively. Experimental measurements place these values in the range 20--40\,ms \parencite{biSynapticModificationsCultured1998}. The STDP induction term then combines Long-Term Potentiation (LTP) and Long-Term Depression (LTD):
+where $\tau_+$ and $\tau_-$ set the widths of the potentiation and depression windows, respectively. Experimental measurements place these values in the range 20--40\,ms \parencite{biSynapticModificationsCultured1998}.
+The STDP induction term then combines Long-Term Potentiation (LTP) and Long-Term Depression (LTD):
 \begin{equation} \label{eq:stdp_induction}
     S(t) = \underbrace{A_+(w)\, x_{\mathrm{pre}}(t)\, \rho_{\mathrm{post}}(t)}_{\text{LTP}} \;-\; \underbrace{A_-(w)\, y_{\mathrm{post}}(t)\, \rho_{\mathrm{pre}}(t)}_{\text{LTD}},
 \end{equation}
@@ -105,7 +104,7 @@ As a simplified stand-in for a more general objective, we define the instantaneo
 \begin{equation} \label{eq:reward}
     R(t) = -\left(r_{\mathrm{post}}(t) - \tfrac{1}{2}\, r_{\mathrm{pre}}(t)\right)^2.
 \end{equation}
-The modulation signal $M(t)$ is then a Reward Prediction Error (RPE), computed as the difference between $R(t)$ and a slowly adapting baseline $\bar{R}(t)$ \parencite{fremauxNeuromodulatedSpikeTimingDependentPlasticity2016}:
+The modulation signal $M(t)$ is then a Reward Prediction Error (RPE), computed as the difference between $R(t)$ and a slowly adapting baseline $\bar{R}(t)$ \parencite{gerstnerEligibilityTracesPlasticity2018,fremauxNeuromodulatedSpikeTimingDependentPlasticity2016}:
 \begin{equation} \label{eq:rpe}
     M(t) = R(t) - \bar{R}(t),
 \end{equation}
@@ -115,9 +114,40 @@ where $\bar{R}(t)$ tracks the running average of the reward:
 \end{equation}
 The baseline enables bidirectional regulation: performance better than expected yields $M > 0$ (reinforcing the current eligibility trace), while performance worse than expected yields $M < 0$ (weakening it).
 
+\subsection{Reduced System of Equations} \label{sec:reduced_system}
+
+The state variables are $V(t)$, $w(t)$, $x_{\mathrm{pre}}(t)$, $y_{\mathrm{post}}(t)$, $E(t)$, $r_{\mathrm{pre}}(t)$, $r_{\mathrm{post}}(t)$, and $\bar{R}(t)$. The presynaptic spike train $\rho_{\mathrm{pre}}(t) = \sum_k \delta(t - t_{\mathrm{pre}}^k)$ is a given input; the postsynaptic spike train $\rho_{\mathrm{post}}(t) = \sum_k \delta(t - t_{\mathrm{post}}^k)$ is determined by the threshold crossing $V(t_{\mathrm{post}}^k) = \theta$ with $dV/dt > 0$, followed by reset $V \to V_{\mathrm{reset}}$ and a refractory hold of duration $\tau_{\mathrm{ref}}$.
+
+\begin{align}
+    \tau_m \frac{dV}{dt} &= -(V - E_L) + R_m\, w \int_{-\infty}^{t} \frac{1}{\tau_s}\, e^{-(t-s)/\tau_s}\, \Theta(t-s)\; \rho_{\mathrm{pre}}(s)\, ds, \label{eq:reduced_V} \\[6pt]
+    \tau_+ \frac{dx_{\mathrm{pre}}}{dt} &= -x_{\mathrm{pre}} + \rho_{\mathrm{pre}}(t), \label{eq:reduced_xpre} \\[6pt]
+    \tau_- \frac{dy_{\mathrm{post}}}{dt} &= -y_{\mathrm{post}} + \rho_{\mathrm{post}}(t), \label{eq:reduced_ypost} \\[6pt]
+    \tau_e \frac{dE}{dt} &= -E + \eta_+(w_{\mathrm{max}} - w)\, x_{\mathrm{pre}}\, \rho_{\mathrm{post}}(t) - \eta_-\, w\, y_{\mathrm{post}}\, \rho_{\mathrm{pre}}(t), \label{eq:reduced_E} \\[6pt]
+    \tau_r \frac{dr_{\mathrm{pre}}}{dt} &= -r_{\mathrm{pre}} + \rho_{\mathrm{pre}}(t), \label{eq:reduced_rpre} \\[6pt]
+    \tau_r \frac{dr_{\mathrm{post}}}{dt} &= -r_{\mathrm{post}} + \rho_{\mathrm{post}}(t), \label{eq:reduced_rpost} \\[6pt]
+    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \label{eq:reduced_Rbar} \\[6pt]
+    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E, \label{eq:reduced_w}
+\end{align}
+
+\subsection{Inter-Spike Dynamics} \label{sec:interspike}
+
+Between spikes, all Dirac delta terms vanish ($\rho_{\mathrm{pre}} = \rho_{\mathrm{post}} = 0$) and the system reduces to a set of autonomous, decoupled relaxation equations. Let $I_s(t)$ denote the residual synaptic current inherited from past presynaptic spikes; between spikes it obeys $dI_s/dt = -I_s/\tau_s$. The inter-spike dynamics are:
+\begin{align}
+    \tau_m \frac{dV}{dt} &= -(V - E_L) + R_m\, w\, I_s(t), \label{eq:inter_V} \\[6pt]
+    \frac{dx_{\mathrm{pre}}}{dt} &= -\frac{x_{\mathrm{pre}}}{\tau_+}, \label{eq:inter_xpre} \\[6pt]
+    \frac{dy_{\mathrm{post}}}{dt} &= -\frac{y_{\mathrm{post}}}{\tau_-}, \label{eq:inter_ypost} \\[6pt]
+    \frac{dE}{dt} &= -\frac{E}{\tau_e}, \label{eq:inter_E} \\[6pt]
+    \frac{dr_{\mathrm{pre}}}{dt} &= -\frac{r_{\mathrm{pre}}}{\tau_r}, \label{eq:inter_rpre} \\[6pt]
+    \frac{dr_{\mathrm{post}}}{dt} &= -\frac{r_{\mathrm{post}}}{\tau_r}, \label{eq:inter_rpost} \\[6pt]
+    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \label{eq:inter_Rbar} \\[6pt]
+    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E. \label{eq:inter_w}
+\end{align}
+
+The trace and rate variables \eqref{eq:inter_xpre}--\eqref{eq:inter_rpost} decay exponentially toward zero with their respective time constants, receiving no new input in the absence of spikes. The eligibility trace \eqref{eq:inter_E} likewise decays, since the STDP induction term $S(t)$ vanishes identically when both spike trains are silent. The reward baseline \eqref{eq:inter_Rbar} relaxes toward the current instantaneous reward, which itself evolves smoothly as the rate estimates decay.
+
 \subsection{Summary of Symbols}
 
-\begin{table}[h]
+\begin{table}[ht]
 \centering
 \caption{Summary of notation.}
 \label{tab:symbols}
@@ -149,7 +179,7 @@ $M(t)$              & Neuromodulatory signal (RPE)                 & \eqref{eq:r
 
 \subsection{Parameter Values}
 
-\begin{table}[h]
+\begin{table}[ht]
 \centering
 \caption{Model parameters and representative values. Ranges are drawn from the cited experimental and modeling literature.}
 \label{tab:parameters}
@@ -164,19 +194,26 @@ $E_L$               & Resting potential              & $-70$\,mV        & \paren
 $\theta$            & Spike threshold                & $-55$\,mV        & \parencite{dayanTheoreticalNeuroscienceComputational2001} \\
 $V_{\mathrm{reset}}$ & Reset potential               & $-70$\,mV        & \parencite{dayanTheoreticalNeuroscienceComputational2001} \\
 $\tau_{\mathrm{ref}}$ & Absolute refractory period   & 2--5\,ms         & \parencite{gerstnerNeuronalDynamicsSingle2014} \\
-$\tau_s$            & Synaptic time constant (PSC)   & 2--10\,ms        & \parencite{destexheKineticModelsSynaptic} \\
+$\tau_s$            & Synaptic time constant (PSC)   & 2--10\,ms        & \parencite{kochMethodsNeuronalModeling1998} \\
 $w_{\mathrm{max}}$  & Maximum synaptic weight        & model-dependent  & --- \\
 $\eta_+$            & LTP learning rate              & model-dependent  & --- \\
 $\eta_-$            & LTD learning rate              & model-dependent  & --- \\
 $\tau_+$            & Potentiation window width      & 20--40\,ms       & \parencite{biSynapticModificationsCultured1998} \\
 $\tau_-$            & Depression window width         & 20--40\,ms       & \parencite{biSynapticModificationsCultured1998} \\
-$\tau_e$            & Eligibility trace decay        & 0.1--1.0\,s      & \parencite{gerstnerNeuronalDynamicsSingle2014} \\
+$\tau_e$            & Eligibility trace decay        & 0.1--1.0\,s      & \parencite{gerstnerEligibilityTracesPlasticity2018} \\
 $\tau_r$            & Rate-estimation time constant   & 50--200\,ms      & --- \\
 $\tau_{\bar{R}}$    & Reward baseline time constant   & 1--10\,s         & \parencite{fremauxNeuromodulatedSpikeTimingDependentPlasticity2016} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+
+% TODO: x pre r pre and I syn are pre computed and injected, (inputs)
+% add pre and post spikes separately to the interspike dynamics and as dirac's or constants instead of spike train
+% I should essentially have 3 different systems of equations
+% maybe look at plotting state spaces
+
+\newpage
 \printbibliography
 
 \end{document}
