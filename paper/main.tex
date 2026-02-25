@@ -62,6 +62,23 @@ The amplitudes of potentiation and depression are modulated by soft-bound functi
 \end{equation}
 where $\eta_+$ and $\eta_-$ are learning rates. These linear dependencies cause the rate of weight change to diminish as $w$ approaches either boundary. This prevents unbounded growth of the weight and biases the dynamics toward the interior of $[0, w_{\mathrm{max}}]$. However, because the full weight update (defined below in \eqref{eq:weight_update}) involves a signed modulation signal, the soft bounds alone do not strictly guarantee $w \in [0, w_{\mathrm{max}}]$; in practice, a hard clipping step $w \leftarrow \max(0, \min(w, w_{\mathrm{max}}))$ may be applied after each update.
 
+\subsection{Presynaptic Input Subsystem} \label{sec:input_subsystem}
+
+Because $\rho_{\mathrm{pre}}(t)$ is a prescribed external input, any quantity whose ODE is driven solely by $\rho_{\mathrm{pre}}$ — with no dependence on the postsynaptic state — is fully determined independently of the postsynaptic system. Three such signals arise in the model and are precomputed as inputs.
+
+The \textit{presynaptic spike-history trace} $x_{\mathrm{pre}}(t)$ and the \textit{presynaptic rate estimate} $r_{\mathrm{pre}}(t)$ are obtained by exponentially low-pass filtering $\rho_{\mathrm{pre}}$:
+\begin{align}
+    \tau_+ \frac{dx_{\mathrm{pre}}(t)}{dt} &= -x_{\mathrm{pre}}(t) + \rho_{\mathrm{pre}}(t), \label{eq:pre_trace} \\
+    \tau_r \frac{dr_{\mathrm{pre}}(t)}{dt} &= -r_{\mathrm{pre}}(t) + \rho_{\mathrm{pre}}(t). \label{eq:rate_pre}
+\end{align}
+The synaptic input current $I_s(t)$ is equally determined by $\rho_{\mathrm{pre}}$ alone; it satisfies the first-order ODE
+\begin{equation} \label{eq:syn_current_ode}
+    \frac{dI_s}{dt} = -\frac{I_s}{\tau_s} + \frac{1}{\tau_s}\,\rho_{\mathrm{pre}}(t),
+\end{equation}
+which is the differential form of the convolution \eqref{eq:synaptic_current}. Between spikes, when $\rho_{\mathrm{pre}} = 0$, this reduces to $dI_s/dt = -I_s/\tau_s$.
+
+The signals $x_{\mathrm{pre}}(t)$, $r_{\mathrm{pre}}(t)$, and $I_s(t)$ enter the postsynaptic system as externally specified forcing functions. They are \emph{not} state variables of the postsynaptic/plasticity system.
+
 \subsection{Local Dynamics: The Eligibility Trace}
 A central feature of this model is that coincident pre- and postsynaptic spikes create a temporary memory called the \textit{eligibility trace} $E(t)$.
 This trace allows the synapse to bridge the temporal gap between millisecond-scale neural activity and delayed reward signals. It evolves as:
@@ -70,12 +87,11 @@ This trace allows the synapse to bridge the temporal gap between millisecond-sca
 \end{equation}
 where $\tau_e$ is a decay time constant, typically on the order of hundreds of milliseconds to seconds for reinforcement learning tasks.
 
-The driving term $S(t)$ captures the instantaneous STDP induction. To define it, we introduce filtered spike-history variables for each neuron:
-\begin{align}
-    \tau_+ \frac{dx_{\mathrm{pre}}(t)}{dt} &= -x_{\mathrm{pre}}(t) + \rho_{\mathrm{pre}}(t), \label{eq:pre_trace} \\
-    \tau_- \frac{dy_{\mathrm{post}}(t)}{dt} &= -y_{\mathrm{post}}(t) + \rho_{\mathrm{post}}(t), \label{eq:post_trace}
-\end{align}
-where $\tau_+$ and $\tau_-$ set the widths of the potentiation and depression windows, respectively. Experimental measurements place these values in the range 20--40\,ms.
+The driving term $S(t)$ captures the instantaneous STDP induction. It depends on the presynaptic trace $x_{\mathrm{pre}}(t)$, which is part of the input subsystem (\S\ref{sec:input_subsystem}), and on the \textit{postsynaptic spike-history trace} $y_{\mathrm{post}}(t)$, which is a state variable of the postsynaptic system:
+\begin{equation}
+    \tau_- \frac{dy_{\mathrm{post}}(t)}{dt} = -y_{\mathrm{post}}(t) + \rho_{\mathrm{post}}(t), \label{eq:post_trace}
+\end{equation}
+where $\tau_-$ sets the width of the depression window. Experimental measurements place $\tau_+$ and $\tau_-$ in the range 20--40\,ms.
 The STDP induction term then combines Long-Term Potentiation (LTP) and Long-Term Depression (LTD):
 \begin{equation} \label{eq:stdp_induction}
     S(t) = \underbrace{A_+(w)\, x_{\mathrm{pre}}(t)\, \rho_{\mathrm{post}}(t)}_{\text{LTP}} \;-\; \underbrace{A_-(w)\, y_{\mathrm{post}}(t)\, \rho_{\mathrm{pre}}(t)}_{\text{LTD}},
@@ -88,12 +104,11 @@ The weight evolves under the product of the eligibility trace and a global neuro
     \frac{dw(t)}{dt} = M(t)\, E(t).
 \end{equation}
 
-To construct $M(t)$, we first define smooth estimates of the instantaneous firing rates by low-pass filtering the spike trains with a rate time constant $\tau_r$:
-\begin{align}
-    \tau_r \frac{dr_{\mathrm{pre}}(t)}{dt} &= -r_{\mathrm{pre}}(t) + \rho_{\mathrm{pre}}(t), \label{eq:rate_pre} \\
-    \tau_r \frac{dr_{\mathrm{post}}(t)}{dt} &= -r_{\mathrm{post}}(t) + \rho_{\mathrm{post}}(t). \label{eq:rate_post}
-\end{align}
-Unlike a rectangular sliding-window estimator, these exponentially weighted averages are smooth functions of time and consistent in form with the other filtered quantities in the model.
+To construct $M(t)$, we require smooth estimates of the instantaneous firing rates. The presynaptic rate $r_{\mathrm{pre}}(t)$ is part of the input subsystem (\S\ref{sec:input_subsystem}). The postsynaptic rate estimate is a state variable of the postsynaptic system, obtained by low-pass filtering $\rho_{\mathrm{post}}$ with time constant $\tau_r$:
+\begin{equation}
+    \tau_r \frac{dr_{\mathrm{post}}(t)}{dt} = -r_{\mathrm{post}}(t) + \rho_{\mathrm{post}}(t). \label{eq:rate_post}
+\end{equation}
+Unlike a rectangular sliding-window estimator, this exponentially weighted average is a smooth function of time and consistent in form with the other filtered quantities in the model.
 
 As a simplified stand-in for a more general objective, we define the instantaneous reward as a penalty on the deviation of the postsynaptic rate from half the presynaptic rate:
 \begin{equation} \label{eq:reward}
@@ -111,14 +126,12 @@ The baseline enables bidirectional regulation: performance better than expected 
 
 \subsection{Reduced System of Equations} \label{sec:reduced_system}
 
-The state variables are $V(t)$, $w(t)$, $x_{\mathrm{pre}}(t)$, $y_{\mathrm{post}}(t)$, $E(t)$, $r_{\mathrm{pre}}(t)$, $r_{\mathrm{post}}(t)$, and $\bar{R}(t)$. The presynaptic spike train $\rho_{\mathrm{pre}}(t) = \sum_k \delta(t - t_{\mathrm{pre}}^k)$ is a given input; the postsynaptic spike train $\rho_{\mathrm{post}}(t) = \sum_k \delta(t - t_{\mathrm{post}}^k)$ is determined by the threshold crossing $V(t_{\mathrm{post}}^k) = \theta$ with $dV/dt > 0$, followed by reset $V \to V_{\mathrm{reset}}$ and a refractory hold of duration $\tau_{\mathrm{ref}}$.
+The input signals $x_{\mathrm{pre}}(t)$, $r_{\mathrm{pre}}(t)$, and $I_s(t)$ are fully determined by the presynaptic input subsystem (\S\ref{sec:input_subsystem}) and enter the postsynaptic system as prescribed forcing functions. The postsynaptic state vector is $\mathbf{x}(t) = \bigl(V,\; y_{\mathrm{post}},\; E,\; r_{\mathrm{post}},\; \bar{R},\; w\bigr)$. The postsynaptic spike train $\rho_{\mathrm{post}}(t) = \sum_k \delta(t - t_{\mathrm{post}}^k)$ is determined endogenously by the threshold crossing $V(t_{\mathrm{post}}^k) = \theta$ with $dV/dt > 0$, followed by reset $V \to V_{\mathrm{reset}}$ and a refractory hold of duration $\tau_{\mathrm{ref}}$.
 
 \begin{align}
-    \tau_m \frac{dV}{dt} &= -(V - E_L) + R_m\, w \int_{-\infty}^{t} \frac{1}{\tau_s}\, e^{-(t-s)/\tau_s}\, \Theta(t-s)\; \rho_{\mathrm{pre}}(s)\, ds, \label{eq:reduced_V} \\[6pt]
-    \tau_+ \frac{dx_{\mathrm{pre}}}{dt} &= -x_{\mathrm{pre}} + \rho_{\mathrm{pre}}(t), \label{eq:reduced_xpre} \\[6pt]
+    \tau_m \frac{dV}{dt} &= -(V - E_L) + R_m\, w\, I_s(t), \label{eq:reduced_V} \\[6pt]
     \tau_- \frac{dy_{\mathrm{post}}}{dt} &= -y_{\mathrm{post}} + \rho_{\mathrm{post}}(t), \label{eq:reduced_ypost} \\[6pt]
     \tau_e \frac{dE}{dt} &= -E + \eta_+(w_{\mathrm{max}} - w)\, x_{\mathrm{pre}}\, \rho_{\mathrm{post}}(t) - \eta_-\, w\, y_{\mathrm{post}}\, \rho_{\mathrm{pre}}(t), \label{eq:reduced_E} \\[6pt]
-    \tau_r \frac{dr_{\mathrm{pre}}}{dt} &= -r_{\mathrm{pre}} + \rho_{\mathrm{pre}}(t), \label{eq:reduced_rpre} \\[6pt]
     \tau_r \frac{dr_{\mathrm{post}}}{dt} &= -r_{\mathrm{post}} + \rho_{\mathrm{post}}(t), \label{eq:reduced_rpost} \\[6pt]
     \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \label{eq:reduced_Rbar} \\[6pt]
     \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E, \label{eq:reduced_w}
@@ -126,19 +139,17 @@ The state variables are $V(t)$, $w(t)$, $x_{\mathrm{pre}}(t)$, $y_{\mathrm{post}
 
 \subsection{Inter-Spike Dynamics} \label{sec:interspike}
 
-Between spikes, all Dirac delta terms vanish ($\rho_{\mathrm{pre}} = \rho_{\mathrm{post}} = 0$) and the system reduces to a set of autonomous, decoupled relaxation equations. Let $I_s(t)$ denote the residual synaptic current inherited from past presynaptic spikes; between spikes it obeys $dI_s/dt = -I_s/\tau_s$. The inter-spike dynamics are:
+Between spikes, all Dirac delta terms vanish ($\rho_{\mathrm{pre}} = \rho_{\mathrm{post}} = 0$) and both the input subsystem and the postsynaptic system reduce to autonomous, decoupled relaxation equations. The input signals decay as $dI_s/dt = -I_s/\tau_s$, $dx_{\mathrm{pre}}/dt = -x_{\mathrm{pre}}/\tau_+$, and $dr_{\mathrm{pre}}/dt = -r_{\mathrm{pre}}/\tau_r$ (\S\ref{sec:input_subsystem}). The postsynaptic inter-spike dynamics are:
 \begin{align}
     \tau_m \frac{dV}{dt} &= -(V - E_L) + R_m\, w\, I_s(t), \label{eq:inter_V} \\[6pt]
-    \frac{dx_{\mathrm{pre}}}{dt} &= -\frac{x_{\mathrm{pre}}}{\tau_+}, \label{eq:inter_xpre} \\[6pt]
     \frac{dy_{\mathrm{post}}}{dt} &= -\frac{y_{\mathrm{post}}}{\tau_-}, \label{eq:inter_ypost} \\[6pt]
     \frac{dE}{dt} &= -\frac{E}{\tau_e}, \label{eq:inter_E} \\[6pt]
-    \frac{dr_{\mathrm{pre}}}{dt} &= -\frac{r_{\mathrm{pre}}}{\tau_r}, \label{eq:inter_rpre} \\[6pt]
     \frac{dr_{\mathrm{post}}}{dt} &= -\frac{r_{\mathrm{post}}}{\tau_r}, \label{eq:inter_rpost} \\[6pt]
     \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \label{eq:inter_Rbar} \\[6pt]
     \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E. \label{eq:inter_w}
 \end{align}
 
-The trace and rate variables \eqref{eq:inter_xpre}--\eqref{eq:inter_rpost} decay exponentially toward zero with their respective time constants, receiving no new input in the absence of spikes. The eligibility trace \eqref{eq:inter_E} likewise decays, since the STDP induction term $S(t)$ vanishes identically when both spike trains are silent. The reward baseline \eqref{eq:inter_Rbar} relaxes toward the current instantaneous reward, which itself evolves smoothly as the rate estimates decay.
+The postsynaptic trace $y_{\mathrm{post}}$ \eqref{eq:inter_ypost}, rate $r_{\mathrm{post}}$ \eqref{eq:inter_rpost}, and eligibility trace $E$ \eqref{eq:inter_E} all decay exponentially toward zero with their respective time constants, receiving no new input in the absence of postsynaptic spikes. The STDP induction term $S(t)$ vanishes identically when both spike trains are silent, so $E$ decays freely. The reward baseline \eqref{eq:inter_Rbar} relaxes toward the current instantaneous reward, which itself evolves smoothly as all rate estimates decay.
 
 \subsection{Summary of Symbols}
 
@@ -160,11 +171,13 @@ $I_{\mathrm{syn}}(t)$ & Total synaptic current                     & \eqref{eq:s
 $I_{\mathrm{ext}}(t)$ & External / noise current                   & \eqref{eq:lif_voltage} \\
 $w$                 & Synaptic weight                              & \eqref{eq:weight_update} \\
 $A_+(w),\; A_-(w)$  & Weight-dependent LTP/LTD amplitudes          & \eqref{eq:soft_bounds} \\
-$x_{\mathrm{pre}}(t)$ & Presynaptic spike-history trace            & \eqref{eq:pre_trace} \\
-$y_{\mathrm{post}}(t)$ & Postsynaptic spike-history trace          & \eqref{eq:post_trace} \\
+$I_s(t)$            & Presynaptic input current (\S\ref{sec:input_subsystem}) & \eqref{eq:syn_current_ode} \\
+$x_{\mathrm{pre}}(t)$ & Presynaptic spike-history trace (input)  & \eqref{eq:pre_trace} \\
+$r_{\mathrm{pre}}(t)$ & Presynaptic rate estimate (input)        & \eqref{eq:rate_pre} \\
+$y_{\mathrm{post}}(t)$ & Postsynaptic spike-history trace         & \eqref{eq:post_trace} \\
 $S(t)$              & STDP induction term                          & \eqref{eq:stdp_induction} \\
 $E(t)$              & Eligibility trace                            & \eqref{eq:eligibility} \\
-$r_{\mathrm{pre}}(t),\; r_{\mathrm{post}}(t)$ & Exponentially filtered firing rates & \eqref{eq:rate_pre}--\eqref{eq:rate_post} \\
+$r_{\mathrm{post}}(t)$ & Exponentially filtered postsynaptic rate & \eqref{eq:rate_post} \\
 $R(t)$              & Instantaneous reward signal                  & \eqref{eq:reward} \\
 $\bar{R}(t)$        & Reward baseline (running average)             & \eqref{eq:reward_baseline} \\
 $M(t)$              & Neuromodulatory signal (RPE)                 & \eqref{eq:rpe} \\
@@ -203,9 +216,7 @@ $\tau_{\bar{R}}$    & Reward baseline time constant   & 1--10\,s         \\
 \end{table}
 
 
-% TODO: x pre r pre and I syn are pre computed and injected, (inputs)
-% add pre and post spikes separately to the interspike dynamics and as dirac's or constants instead of spike train
-% I should essentially have 3 different systems of equations
-% maybe look at plotting state spaces
+% TODO: add pre and post spikes separately to the interspike dynamics as Dirac deltas or constants
+% TODO: maybe look at plotting state spaces
 
 \end{document}
