@@ -1,0 +1,49 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath, amssymb, amsfonts, amsthm}
+\usepackage{mathtools}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue]{hyperref}
+
+\geometry{a4paper, margin=1in}
+\linespread{1.15}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+\begin{document}
+
+\section{Base Neuronal Dynamics} \label{sec:interspike}
+
+The presynaptic input signals decay as
+\[
+    \frac{dI_s}{dt} = -\frac{I_s}{\tau_s}, \qquad
+    \frac{dx_{\mathrm{pre}}}{dt} = -\frac{x_{\mathrm{pre}}}{\tau_+}, \qquad
+    \frac{dr_{\mathrm{pre}}}{dt} = -\frac{r_{\mathrm{pre}}}{\tau_r}.
+\]
+These are fully determined by initial conditions set at the last presynaptic spike and enter the postsynaptic system as forcing functions. The postsynaptic dynamics are:
+\begin{align}
+    \tau_m \frac{dV}{dt} &= -(V - E_L) + R_m\, w\, I_s(t), \label{eq:inter_V} \\[6pt]
+    \frac{dy_{\mathrm{post}}}{dt} &= -\frac{y_{\mathrm{post}}}{\tau_-}, \label{eq:inter_ypost} \\[6pt]
+    \frac{dE}{dt} &= -\frac{E}{\tau_e}, \label{eq:inter_E} \\[6pt]
+    \frac{dr_{\mathrm{post}}}{dt} &= -\frac{r_{\mathrm{post}}}{\tau_r}, \label{eq:inter_rpost} \\[6pt]
+    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \label{eq:inter_Rbar} \\[6pt]
+    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E. \label{eq:inter_w}
+\end{align}
+
+The postsynaptic state vector is $\mathbf{x}(t) = \bigl(V,\; y_{\mathrm{post}},\; E,\; r_{\mathrm{post}},\; \bar{R},\; w\bigr) \in \mathbb{R}^6$, and the inputs $\bigl(I_s(t),\; x_{\mathrm{pre}}(t),\; r_{\mathrm{pre}}(t)\bigr)$.
+
+\section{Pre-synaptic spike event} \label{sec:pre-spike}
+
+\section{Post-synaptic spike event} \label{sec:post-spike}
