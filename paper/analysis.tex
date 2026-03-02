@@ -46,36 +46,31 @@ The postsynaptic state vector is $\mathbf{x}(t) = \bigl(V,\; y_{\mathrm{post}},\
 
 \section{Pre-synaptic spike event} \label{sec:pre-spike}
 
-At each presynaptic spike time $t_{\mathrm{pre}}^k$, the Dirac term $\rho_{\mathrm{pre}}(t) = \delta(t - t_{\mathrm{pre}}^k)$ fires instantaneously. The input subsystem variables receive impulsive increments, which are implemented as discrete jumps in the state:
+At each presynaptic spike time $t_{\mathrm{pre}}^k$ (an exogenous input event), the input subsystem variables receive discrete increments:
 \[
-    I_s \;\leftarrow\; I_s + \frac{1}{\tau_s}, \qquad
-    x_{\mathrm{pre}} \;\leftarrow\; x_{\mathrm{pre}} + \frac{1}{\tau_+}, \qquad
-    r_{\mathrm{pre}} \;\leftarrow\; r_{\mathrm{pre}} + \frac{1}{\tau_r}.
+    I_s \;\leftarrow\; I_s + 1, \qquad
+    x_{\mathrm{pre}} \;\leftarrow\; x_{\mathrm{pre}} + 1, \qquad
+    r_{\mathrm{pre}} \;\leftarrow\; r_{\mathrm{pre}} + 1.
 \]
-The only postsynaptic state variable that receives a direct impulsive drive at a presynaptic spike is the eligibility trace, which acquires an LTD contribution through the postsynaptic trace $y_{\mathrm{post}}$ evaluated at $t_{\mathrm{pre}}^k$:
+The eligibility trace acquires an LTD contribution, weighted by the postsynaptic trace at the moment of the spike:
 \[
-    E \;\leftarrow\; E - A_-(w)\, y_{\mathrm{post}}(t_{\mathrm{pre}}^{k-}).
+    E \;\leftarrow\; E - \eta_-\, w\, y_{\mathrm{post}}(t_{\mathrm{pre}}^{k-}).
 \]
-All other postsynaptic variables ($V$, $y_{\mathrm{post}}$, $r_{\mathrm{post}}$, $\bar{R}$, $w$) are continuous through $t_{\mathrm{pre}}^k$ and follow their inter-spike dynamics \eqref{eq:inter_V}--\eqref{eq:inter_w}, now driven by the updated $I_s$.
+All remaining postsynaptic variables ($V$, $y_{\mathrm{post}}$, $r_{\mathrm{post}}$, $\bar{R}$, $w$) are continuous through $t_{\mathrm{pre}}^k$; inter-spike dynamics \eqref{eq:inter_V}--\eqref{eq:inter_w} resume with the updated $I_s$.
 
 \section{Post-synaptic spike event} \label{sec:post-spike}
 
-At each postsynaptic spike time $t_{\mathrm{post}}^k$, defined by the threshold crossing 
-\begin{equation} \label{eq:threshold}
-    t_{\mathrm{post}}^k : \quad V(t_{\mathrm{post}}^k) = \theta \quad \text{and} \quad \left.\frac{dV}{dt}\right|_{t=t_{\mathrm{post}}^k} > 0,
-\end{equation}
-the membrane potential is reset and a discrete jump is applied to the postsynaptic state variables $V$, $y_{\mathrm{post}}$, $r_{\mathrm{post}}$ according to the reset map:
+At each postsynaptic spike time $t_{\mathrm{post}}^k$, defined by the threshold crossing $V = \theta$ with $dV/dt > 0$ (an endogenous event), the membrane potential resets and the postsynaptic trace variables receive discrete increments:
 \[
     V \;\leftarrow\; V_{\mathrm{reset}}, \qquad
-    y_{\mathrm{post}} \;\leftarrow\; y_{\mathrm{post}} + \frac{1}{\tau_-}, \qquad
-    r_{\mathrm{post}} \;\leftarrow\; r_{\mathrm{post}} + \frac{1}{\tau_r}.
+    y_{\mathrm{post}} \;\leftarrow\; y_{\mathrm{post}} + 1, \qquad
+    r_{\mathrm{post}} \;\leftarrow\; r_{\mathrm{post}} + 1.
 \]
-and the eligibility trace acquires an LTP contribution through the presynaptic trace $x_{\mathrm{pre}}$ evaluated at $t_{\mathrm{post}}^k$:
+The eligibility trace acquires an LTP contribution, weighted by the presynaptic trace at the moment of the spike:
 \[
-    E \;\leftarrow\; E + A_+(w)\, x_{\mathrm{pre}}(t_{\mathrm{post}}^{k-}).
+    E \;\leftarrow\; E + \eta_+\,(w_{\mathrm{max}} - w)\, x_{\mathrm{pre}}(t_{\mathrm{post}}^{k-}).
 \]
-The variables $\bar{R}$ and $w$ are continuous through $t_{\mathrm{post}}^k$; they are driven by the smoothly varying rate estimates $r_{\mathrm{post}}$ and $r_{\mathrm{pre}}$. Following the spike, the postsynaptic voltage dynamics are suspended for a refractory period $\tau_{\mathrm{ref}}$, after which integration resumes from $V_{\mathrm{reset}}$.
-
+All remaining variables ($\bar{R}$, $w$) are continuous through $t_{\mathrm{post}}^k$. Following the spike, voltage integration is suspended for a refractory period $\tau_{\mathrm{ref}}$, after which it resumes from $V_{\mathrm{reset}}$.
 \section{Complete Dynamics} \label{sec:reduced_system}
 
 \begin{align}
@@ -86,5 +81,45 @@ The variables $\bar{R}$ and $w$ are continuous through $t_{\mathrm{post}}^k$; th
     \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \label{eq:reduced_Rbar} \\[6pt]
     \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E, \label{eq:reduced_w}
 \end{align}
+
+\newpage
+\section*{Equation Reference}
+
+\paragraph*{Inter-spike dynamics --- input subsystem:}
+\[
+    \frac{dI_s}{dt} = -\frac{I_s}{\tau_s}, \qquad
+    \frac{dx_{\mathrm{pre}}}{dt} = -\frac{x_{\mathrm{pre}}}{\tau_+}, \qquad
+    \frac{dr_{\mathrm{pre}}}{dt} = -\frac{r_{\mathrm{pre}}}{\tau_r}.
+\]
+
+\paragraph*{Inter-spike dynamics --- postsynaptic:}
+\begin{align*}
+    \tau_m \frac{dV}{dt} &= -(V - E_L) + R_m\, w\, I_s(t), \\[6pt]
+    \frac{dy_{\mathrm{post}}}{dt} &= -\frac{y_{\mathrm{post}}}{\tau_-}, \\[6pt]
+    \frac{dE}{dt} &= -\frac{E}{\tau_e}, \\[6pt]
+    \frac{dr_{\mathrm{post}}}{dt} &= -\frac{r_{\mathrm{post}}}{\tau_r}, \\[6pt]
+    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \\[6pt]
+    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E.
+\end{align*}
+
+\paragraph*{Pre-synaptic spike event at $t_{\mathrm{pre}}^k$:}
+\[
+    I_s \;\leftarrow\; I_s + 1, \qquad
+    x_{\mathrm{pre}} \;\leftarrow\; x_{\mathrm{pre}} + 1, \qquad
+    r_{\mathrm{pre}} \;\leftarrow\; r_{\mathrm{pre}} + 1,
+\]
+\[
+    E \;\leftarrow\; E - \eta_-\, w\, y_{\mathrm{post}}(t_{\mathrm{pre}}^{k-}).
+\]
+
+\paragraph*{Post-synaptic spike event at $t_{\mathrm{post}}^k$:}
+\[
+    V \;\leftarrow\; V_{\mathrm{reset}}, \qquad
+    y_{\mathrm{post}} \;\leftarrow\; y_{\mathrm{post}} + 1, \qquad
+    r_{\mathrm{post}} \;\leftarrow\; r_{\mathrm{post}} + 1,
+\]
+\[
+    E \;\leftarrow\; E + \eta_+\,(w_{\mathrm{max}} - w)\, x_{\mathrm{pre}}(t_{\mathrm{post}}^{k-}).
+\]
 
 \end{document}
