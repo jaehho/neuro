@@ -86,40 +86,40 @@ All remaining variables ($\bar{R}$, $w$) are continuous through $t_{\mathrm{post
 \section*{Equation Reference}
 
 \paragraph*{Inter-spike dynamics --- input subsystem:}
-\[
-    \frac{dI_s}{dt} = -\frac{I_s}{\tau_s}, \qquad
-    \frac{dx_{\mathrm{pre}}}{dt} = -\frac{x_{\mathrm{pre}}}{\tau_+}, \qquad
-    \frac{dr_{\mathrm{pre}}}{dt} = -\frac{r_{\mathrm{pre}}}{\tau_r}.
-\]
+\begin{align}
+    \frac{dI_s}{dt} &= -\frac{I_s}{\tau_s}, \label{eq:ref_Is} \\[6pt]
+    \frac{dx_{\mathrm{pre}}}{dt} &= -\frac{x_{\mathrm{pre}}}{\tau_+}, \label{eq:ref_xpre} \\[6pt]
+    \frac{dr_{\mathrm{pre}}}{dt} &= -\frac{r_{\mathrm{pre}}}{\tau_r}. \label{eq:ref_rpre}
+\end{align}
 
 \paragraph*{Inter-spike dynamics --- postsynaptic:}
-\begin{align*}
-    \tau_m \frac{dV}{dt} &= -(V - E_L) + R_m\, w\, I_s(t), \\[6pt]
-    \frac{dy_{\mathrm{post}}}{dt} &= -\frac{y_{\mathrm{post}}}{\tau_-}, \\[6pt]
-    \frac{dE}{dt} &= -\frac{E}{\tau_e}, \\[6pt]
-    \frac{dr_{\mathrm{post}}}{dt} &= -\frac{r_{\mathrm{post}}}{\tau_r}, \\[6pt]
-    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \\[6pt]
-    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E.
-\end{align*}
+\begin{align}
+    \tau_m \frac{dV}{dt} &= -(V - E_L) + R_m\, w\, I_s(t), \label{eq:ref_V} \\[6pt]
+    \frac{dy_{\mathrm{post}}}{dt} &= -\frac{y_{\mathrm{post}}}{\tau_-}, \label{eq:ref_ypost} \\[6pt]
+    \frac{dE}{dt} &= -\frac{E}{\tau_e}, \label{eq:ref_E} \\[6pt]
+    \frac{dr_{\mathrm{post}}}{dt} &= -\frac{r_{\mathrm{post}}}{\tau_r}, \label{eq:ref_rpost} \\[6pt]
+    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \label{eq:ref_Rbar} \\[6pt]
+    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E. \label{eq:ref_w}
+\end{align}
 
 \paragraph*{Pre-synaptic spike event at $t_{\mathrm{pre}}^k$:}
-\[
-    I_s \;\leftarrow\; I_s + 1, \qquad
-    x_{\mathrm{pre}} \;\leftarrow\; x_{\mathrm{pre}} + 1, \qquad
-    r_{\mathrm{pre}} \;\leftarrow\; r_{\mathrm{pre}} + 1,
-\]
-\[
-    E \;\leftarrow\; E - \eta_-\, w\, y_{\mathrm{post}}(t_{\mathrm{pre}}^{k-}).
-\]
+\begin{align}
+    I_s &\;\leftarrow\; I_s + 1, \label{eq:ref_pre_Is} \\[6pt]
+    x_{\mathrm{pre}} &\;\leftarrow\; x_{\mathrm{pre}} + 1, \label{eq:ref_pre_xpre} \\[6pt]
+    r_{\mathrm{pre}} &\;\leftarrow\; r_{\mathrm{pre}} + 1, \label{eq:ref_pre_rpre}
+\end{align}
+\begin{align}
+    E \;\leftarrow\; E - \eta_-\, w\, y_{\mathrm{post}}(t_{\mathrm{pre}}^{k-}). \label{eq:ref_pre_E}
+\end{align}
 
 \paragraph*{Post-synaptic spike event at $t_{\mathrm{post}}^k$:}
-\[
-    V \;\leftarrow\; V_{\mathrm{reset}}, \qquad
-    y_{\mathrm{post}} \;\leftarrow\; y_{\mathrm{post}} + 1, \qquad
-    r_{\mathrm{post}} \;\leftarrow\; r_{\mathrm{post}} + 1,
-\]
-\[
-    E \;\leftarrow\; E + \eta_+\,(w_{\mathrm{max}} - w)\, x_{\mathrm{pre}}(t_{\mathrm{post}}^{k-}).
-\]
+\begin{align}
+    V &\;\leftarrow\; V_{\mathrm{reset}}, \label{eq:ref_post_V} \\[6pt]
+    y_{\mathrm{post}} &\;\leftarrow\; y_{\mathrm{post}} + 1, \label{eq:ref_post_ypost} \\[6pt]
+    r_{\mathrm{post}} &\;\leftarrow\; r_{\mathrm{post}} + 1, \label{eq:ref_post_rpost}
+\end{align}
+\begin{align}
+    E \;\leftarrow\; E + \eta_+\,(w_{\mathrm{max}} - w)\, x_{\mathrm{pre}}(t_{\mathrm{post}}^{k-}). \label{eq:ref_post_E}
+\end{align}
 
 \end{document}
