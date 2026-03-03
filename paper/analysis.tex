@@ -7,7 +7,11 @@
 \usepackage{setspace}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{array}
+\usepackage{ragged2e}
 \usepackage[colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue]{hyperref}
+\usepackage[style=apa,natbib=true]{biblatex} 
+\addbibresource{references.bib} 
 
 \geometry{a4paper, margin=1in}
 \linespread{1.15}
@@ -121,5 +125,63 @@ All remaining variables ($\bar{R}$, $w$) are continuous through $t_{\mathrm{post
 \begin{align}
     E \;\leftarrow\; E + \eta_+\,(w_{\mathrm{max}} - w)\, x_{\mathrm{pre}}(t_{\mathrm{post}}^{k-}). \label{eq:ref_post_E}
 \end{align}
+
+\section*{Model Parameters}
+\label{sec:parameters}
+
+\begin{table}[htbp]
+\centering
+\small
+\label{tab:params}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabular}{@{}lll>{\RaggedRight\arraybackslash}p{4.8cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Description} & \textbf{Typical Value} & \textbf{Source} \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Membrane dynamics (leaky integrate-and-fire)}} \\[2pt]
+$\tau_m$               & Membrane time constant          & 20\,ms                  &
+  \cite{McCormick1985,kochMethodsNeuronalModeling1998,dayanTheoreticalNeuroscienceComputational2001} \\
+$E_L$                  & Leak (resting) potential        & $-70$\,mV               &
+  \cite{McCormick1985,Destexhe2001} \\
+$R_m$                  & Membrane resistance             & $100$\,M$\Omega$        &
+  \cite{kochMethodsNeuronalModeling1998,dayanTheoreticalNeuroscienceComputational2001} \\
+$\theta$               & Spike threshold                 & $-55$\,mV               &
+  \cite{Henze2000,Destexhe2001} \\
+$V_{\mathrm{reset}}$   & Reset potential after spike     & $-65$\,mV               &
+  \cite{Destexhe2001,gerstnerNeuronalDynamicsSingle2014} \\
+$\tau_{\mathrm{ref}}$  & Absolute refractory period      & 2\,ms                   &
+  \cite{Henze2000,gerstnerNeuronalDynamicsSingle2014} \\[6pt]
+\multicolumn{4}{@{}l}{\textit{Synaptic current}} \\[2pt]
+$\tau_s$               & Synaptic current decay (AMPA)   & 5\,ms                   &
+  \cite{Destexhe1994,Roth2009,dayanTheoreticalNeuroscienceComputational2001} \\[6pt]
+\multicolumn{4}{@{}l}{\textit{STDP trace time constants}} \\[2pt]
+$\tau_+$               & Pre-synaptic LTP trace          & 20\,ms                  &
+  \cite{biSynapticModificationsCultured1998,Song2000} \\
+$\tau_-$               & Post-synaptic LTD trace         & 20\,ms                  &
+  \cite{biSynapticModificationsCultured1998,Song2000} \\[6pt]
+\multicolumn{4}{@{}l}{\textit{Firing-rate trace}} \\[2pt]
+$\tau_r$               & Low-pass firing-rate trace      & 200\,ms                 &
+  \cite{gerstnerNeuronalDynamicsSingle2014,izhikevichDynamicalSystemsNeuroscience2006} \\[6pt]
+\multicolumn{4}{@{}l}{\textit{Eligibility trace}} \\[2pt]
+$\tau_e$               & Eligibility trace decay         & 1\,s                    &
+  \cite{gerstnerEligibilityTracesPlasticity2018,fremauxNeuromodulatedSpikeTimingDependentPlasticity2016} \\[6pt]
+\multicolumn{4}{@{}l}{\textit{Reward baseline}} \\[2pt]
+$\tau_{\bar{R}}$       & Running reward average          & 1--10\,s                &
+  \cite{gerstnerEligibilityTracesPlasticity2018,fremauxNeuromodulatedSpikeTimingDependentPlasticity2016,Sutton1998} \\[6pt]
+\multicolumn{4}{@{}l}{\textit{Plasticity learning rates}} \\[2pt]
+$\eta_+$               & LTP learning rate               & $0.01$                  &
+  \cite{Song2000,Morrison2008} \\
+$\eta_-$               & LTD learning rate               & $0.0105$                &
+  \cite{Song2000,Morrison2008} \\[6pt]
+\multicolumn{4}{@{}l}{\textit{Synaptic weight bounds}} \\[2pt]
+$w_{\mathrm{max}}$     & Maximum synaptic weight         & 1.0 (normalized)        &
+  \cite{Song2000,Morrison2008} \\
+$w(0)$                 & Initial synaptic weight         & $0.5\,w_{\mathrm{max}}$ &
+  \cite{Song2000,abbottBuildingFunctionalNetworks2016} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% \printbibliography
 
 \end{document}

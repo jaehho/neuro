@@ -2,6 +2,10 @@ from dataclasses import dataclass
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Variable / parameter names match analysis.tex exactly.
+# Each numerical update is tagged with the corresponding equation label
+# from the "Equation Reference" section of analysis.tex (eq:ref_*).
+
 
 @dataclass
 class Params:
@@ -9,33 +13,37 @@ class Params:
     dt: float = 1e-4
     seed: int = 0
 
-    r_pre_rate: float = 20.0
+    r_pre_rate: float = 20.0       # Poisson rate of presynaptic input (Hz)
 
-    tau_m: float = 0.02
-    E_L: float = -65.0
-    V_reset: float = -70.0
-    theta: float = -50.0
-    tau_ref: float = 0.003
+    # LIF membrane  (eq:ref_V)
+    tau_m: float = 0.02            # τ_m  – membrane time constant (s)
+    E_L: float = -65.0             # E_L  – resting potential (mV)
+    V_reset: float = -70.0         # V_reset
+    theta: float = -50.0           # θ    – spike threshold (mV)
+    tau_ref: float = 0.003         # τ_ref – absolute refractory period (s)
 
-    tau_s: float = 0.005
+    # Synaptic current  (eq:ref_Is)
+    tau_s: float = 0.005           # τ_s
+    R_m: float = 50.0              # R_m  – membrane resistance (MΩ)
 
-    R_m: float = 50.0
+    # STDP eligibility traces  (eq:ref_xpre, eq:ref_ypost)
+    tau_plus: float = 0.02         # τ_+  – pre-synaptic trace decay
+    tau_minus: float = 0.02        # τ_-  – post-synaptic trace decay
 
-    tau_plus: float = 0.02
-    tau_minus: float = 0.02
+    # Firing-rate filters  (eq:ref_rpre, eq:ref_rpost)
+    tau_r: float = 0.5             # τ_r
 
-    tau_r: float = 0.5
+    # Eligibility trace  (eq:ref_E)
+    tau_e: float = 0.5             # τ_e
 
-    tau_e: float = 0.5
+    # Reward baseline  (eq:ref_Rbar)
+    tau_Rbar: float = 5.0          # τ_R̄
 
-    tau_Rbar: float = 5.0
-
-    w0: float = 2.0
-    wmax: float = 10.0
-    eta_plus: float = 1e-4
-    eta_minus: float = 1e-4
-
-    kappa_w: float = 1.0
+    # Plasticity  (eq:ref_pre_E, eq:ref_post_E, eq:ref_w)
+    w0: float = 2.0                # initial weight
+    wmax: float = 10.0             # w_max
+    eta_plus: float = 1e-4         # η_+  – LTP rate
+    eta_minus: float = 1e-4        # η_-  – LTD rate
 
     record_every: float = 0.001
 
@@ -44,25 +52,34 @@ def simulate(p: Params):
     rng = np.random.default_rng(p.seed)
     n = int(p.T / p.dt)
 
+    # ------------------------------------------------------------------ #
+    # State variables – names and grouping follow analysis.tex Sec. 1–3  #
+    # ------------------------------------------------------------------ #
+
+    # Membrane
     V = p.E_L
     ref_remaining = 0.0
 
-    I_s = 0.0
-    x = 0.0
-    y = 0.0
+    # Input subsystem (Sec. 1 / eq:ref_Is, eq:ref_xpre, eq:ref_rpre)
+    I_s   = 0.0
+    x_pre = 0.0
     r_pre = 0.0
+
+    # Postsynaptic subsystem (Sec. 1 / eq:ref_ypost..eq:ref_w)
+    y_post = 0.0
     r_post = 0.0
-    E = 0.0
-    w = p.w0
-    Rbar = 0.0
+    E      = 0.0
+    R_bar  = 0.0
+    w      = p.w0
 
     rec_step = max(1, int(p.record_every / p.dt))
     m = n // rec_step + 2
 
     rec = {k: np.zeros(m) for k in [
-        "t", "V", "w", "I_s", "I_syn", "x", "y", "E",
-        "r_pre", "r_post", "R", "Rbar", "M",
-        "pre_spike_bin", "post_spike_bin", "is_refractory"
+        "t", "V", "w", "I_s",
+        "x_pre", "y_post", "E",
+        "r_pre", "r_post", "R", "R_bar", "M",
+        "pre_spike_bin", "post_spike_bin", "is_refractory",
     ]}
 
     pre_spike_times = []
@@ -72,33 +89,37 @@ def simulate(p: Params):
     for step in range(n):
         t = step * p.dt
 
+        # ------------------------------------------------------------------ #
+        # Sec. 2 – Pre-synaptic spike event                                  #
+        # ------------------------------------------------------------------ #
         pre_spike = 1 if (rng.random() < p.r_pre_rate * p.dt) else 0
         if pre_spike:
             pre_spike_times.append(t)
+            I_s   += 1.0   # eq:ref_pre_Is
+            x_pre += 1.0   # eq:ref_pre_xpre
+            r_pre += 1.0   # eq:ref_pre_rpre
+            E -= p.eta_minus * w * y_post  # eq:ref_pre_E  (LTD)
 
-        if pre_spike:
-            I_s += 1.0
-            x += 1.0
-            r_pre += 1.0
-            E -= p.eta_minus * w * y
+        # ------------------------------------------------------------------ #
+        # Sec. 1 – Inter-spike dynamics: input subsystem                     #
+        # ------------------------------------------------------------------ #
+        I_s   += p.dt * (-I_s   / p.tau_s)      # eq:ref_Is
+        x_pre += p.dt * (-x_pre / p.tau_plus)   # eq:ref_xpre
+        r_pre += p.dt * (-r_pre / p.tau_r)      # eq:ref_rpre
 
-        I_s += p.dt * (-I_s / p.tau_s)
-        x += p.dt * (-x / p.tau_plus)
-        r_pre += p.dt * (-r_pre / p.tau_r)
-
-        I_syn = p.R_m * w * I_s
-
-        post_spike = 0
+        # ------------------------------------------------------------------ #
+        # Sec. 1 – Inter-spike dynamics: membrane potential                  #
+        # ------------------------------------------------------------------ #
+        post_spike    = 0
         is_refractory = 1 if ref_remaining > 0.0 else 0
 
         if ref_remaining <= 0.0:
-            dV = (p.dt / p.tau_m) * (-(V - p.E_L) + I_syn)
+            dV    = (p.dt / p.tau_m) * (-(V - p.E_L) + p.R_m * w * I_s)  # eq:ref_V
             V_new = V + dV
-
             if V < p.theta and V_new >= p.theta:
                 post_spike = 1
                 post_spike_times.append(t)
-                V = p.V_reset
+                V             = p.V_reset   # eq:ref_post_V
                 ref_remaining = p.tau_ref
             else:
                 V = V_new
@@ -106,45 +127,49 @@ def simulate(p: Params):
             ref_remaining -= p.dt
             V = p.V_reset
 
+        # ------------------------------------------------------------------ #
+        # Sec. 3 – Post-synaptic spike event                                 #
+        # ------------------------------------------------------------------ #
         if post_spike:
-            y += 1.0
-            r_post += 1.0
-            E += p.eta_plus * (p.wmax - w) * x
+            y_post += 1.0  # eq:ref_post_ypost
+            r_post += 1.0  # eq:ref_post_rpost
+            E += p.eta_plus * (p.wmax - w) * x_pre  # eq:ref_post_E  (LTP)
 
-        y += p.dt * (-y / p.tau_minus)
-        r_post += p.dt * (-r_post / p.tau_r)
-        E += p.dt * (-E / p.tau_e)
+        # ------------------------------------------------------------------ #
+        # Sec. 1 – Inter-spike dynamics: postsynaptic subsystem              #
+        # ------------------------------------------------------------------ #
+        y_post += p.dt * (-y_post / p.tau_minus)  # eq:ref_ypost
+        r_post += p.dt * (-r_post / p.tau_r)      # eq:ref_rpost
+        E      += p.dt * (-E      / p.tau_e)      # eq:ref_E
 
-        R = -(r_post - 0.5 * r_pre) ** 2
-        Rbar += (p.dt / p.tau_Rbar) * (-Rbar + R)
-        M = R - Rbar
-
-        w += p.kappa_w * p.dt * M * E
-        w = min(p.wmax, max(0.0, w))
+        R     = -(r_post - 0.5 * r_pre) ** 2                       # instantaneous reward
+        R_bar += (p.dt / p.tau_Rbar) * (-R_bar + R)                # eq:ref_Rbar
+        M     = R - R_bar                                           # neuromodulator: R - R̄
+        w    += p.dt * M * E                                        # eq:ref_w
+        w     = min(p.wmax, max(0.0, w))
 
         if step % rec_step == 0:
-            rec["t"][k] = t
-            rec["V"][k] = V
-            rec["w"][k] = w
-            rec["I_s"][k] = I_s
-            rec["I_syn"][k] = I_syn
-            rec["x"][k] = x
-            rec["y"][k] = y
-            rec["E"][k] = E
-            rec["r_pre"][k] = r_pre
-            rec["r_post"][k] = r_post
-            rec["R"][k] = R
-            rec["Rbar"][k] = Rbar
-            rec["M"][k] = M
-            rec["pre_spike_bin"][k] = pre_spike
+            rec["t"][k]              = t
+            rec["V"][k]              = V
+            rec["w"][k]              = w
+            rec["I_s"][k]            = I_s
+            rec["x_pre"][k]          = x_pre
+            rec["y_post"][k]         = y_post
+            rec["E"][k]              = E
+            rec["r_pre"][k]          = r_pre
+            rec["r_post"][k]         = r_post
+            rec["R"][k]              = R
+            rec["R_bar"][k]          = R_bar
+            rec["M"][k]              = M
+            rec["pre_spike_bin"][k]  = pre_spike
             rec["post_spike_bin"][k] = post_spike
-            rec["is_refractory"][k] = is_refractory
+            rec["is_refractory"][k]  = is_refractory
             k += 1
 
     for kk in rec:
         rec[kk] = rec[kk][:k]
 
-    rec["pre_spike_times"] = np.array(pre_spike_times)
+    rec["pre_spike_times"]  = np.array(pre_spike_times)
     rec["post_spike_times"] = np.array(post_spike_times)
     return rec
 
@@ -196,17 +221,15 @@ def plot_all_in_one_figure(rec, p):
         i += 1
 
     if PANELS["synapse"]:
-        axs[i].plot(t, rec["I_s"], label="I_s(t)")
-        axs[i].plot(t, rec["I_syn"], label="I_syn(t) = w·I_s")
-        axs[i].legend(loc="upper right")
-        axs[i].set_title("Synaptic dynamics")
+        axs[i].plot(t, rec["I_s"])  # eq:ref_Is
+        axs[i].set_title("Synaptic current I_s(t)")
         i += 1
 
     if PANELS["stdp_traces"]:
-        axs[i].plot(t, rec["x"], label="x (pre)")
-        axs[i].plot(t, rec["y"], label="y (post)")
+        axs[i].plot(t, rec["x_pre"],  label="x_pre")
+        axs[i].plot(t, rec["y_post"], label="y_post")
         axs[i].legend(loc="upper right")
-        axs[i].set_title("STDP traces")
+        axs[i].set_title("STDP traces  (eq:ref_xpre, eq:ref_ypost)")
         i += 1
 
     if PANELS["eligibility"]:
@@ -224,9 +247,9 @@ def plot_all_in_one_figure(rec, p):
         i += 1
 
     if PANELS["reward"]:
-        axs[i].plot(t, rec["R"], label="R")
-        axs[i].plot(t, rec["Rbar"], label="R̄")
-        axs[i].plot(t, rec["M"], label="M = R − R̄")
+        axs[i].plot(t, rec["R"],     label="R  (instantaneous)")
+        axs[i].plot(t, rec["R_bar"], label="R̄  (eq:ref_Rbar)")
+        axs[i].plot(t, rec["M"],     label="M = R − R̄  (eq:ref_w)")
         axs[i].legend(loc="upper right")
         axs[i].set_title("Reward, baseline, neuromodulator")
         i += 1
@@ -280,7 +303,6 @@ if __name__ == "__main__":
         wmax=10.0,
         eta_plus=1e-4,
         eta_minus=1e-4,
-        kappa_w=1.0,
     )
 
     rec = simulate(p)
