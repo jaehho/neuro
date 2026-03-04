@@ -49,8 +49,8 @@ class Params:
 
 
 def simulate(p: Params):
-    rng = np.random.default_rng(p.seed)
     n = int(p.T / p.dt)
+    period_steps = max(1, round(1.0 / (p.r_pre_rate * p.dt)))
 
     # ------------------------------------------------------------------ #
     # State variables – names and grouping follow analysis.tex Sec. 1–3  #
@@ -92,7 +92,7 @@ def simulate(p: Params):
         # ------------------------------------------------------------------ #
         # Sec. 2 – Pre-synaptic spike event                                  #
         # ------------------------------------------------------------------ #
-        pre_spike = 1 if (rng.random() < p.r_pre_rate * p.dt) else 0
+        pre_spike = 1 if (step % period_steps == 0) else 0
         if pre_spike:
             pre_spike_times.append(t)
             I_s   += 1.0   # eq:ref_pre_Is
@@ -142,7 +142,7 @@ def simulate(p: Params):
         r_post += p.dt * (-r_post / p.tau_r)      # eq:ref_rpost
         E      += p.dt * (-E      / p.tau_e)      # eq:ref_E
 
-        R     = -(r_post - 0.5 * r_pre) ** 2                       # instantaneous reward
+        R     = -(r_post - 0.25 * r_pre) ** 2                       # instantaneous reward
         R_bar += (p.dt / p.tau_Rbar) * (-R_bar + R)                # eq:ref_Rbar
         M     = R - R_bar                                           # neuromodulator: R - R̄
         w    += p.dt * M * E                                        # eq:ref_w
@@ -240,7 +240,7 @@ def plot_all_in_one_figure(rec, p):
     if PANELS["rates"]:
         axs[i].plot(t, rec["r_pre"], label="r_pre")
         axs[i].plot(t, rec["r_post"], label="r_post")
-        axs[i].plot(t, 0.5 * rec["r_pre"], linestyle="--", label="target (½ r_pre)")
+        axs[i].plot(t, 0.25 * rec["r_pre"], linestyle="--", label="target (½ r_pre)")
         axs[i].legend(loc="upper right")
         axs[i].set_ylabel("Hz")
         axs[i].set_title("Firing rates (exponential filter, τ_r)")
@@ -303,6 +303,12 @@ if __name__ == "__main__":
         wmax=10.0,
         eta_plus=1e-4,
         eta_minus=1e-4,
+        # TODO: add all initial conditions
+        # oom handling
+        # play with initial conditions and parameters to see different regimes of behavior
+        # how sensitive is the model to parameters?
+        # how to measure convergence: spectrum analysis? transient analysis?
+        # try different target regimes, nonlinear?
     )
 
     rec = simulate(p)
