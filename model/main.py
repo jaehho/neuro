@@ -1,6 +1,62 @@
-from dataclasses import dataclass
-import numpy as np
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import asdict, dataclass
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
 import matplotlib.pyplot as plt
+import numpy as np
+
+try:
+    import h5py
+except ImportError:
+    h5py = None
+
+try:
+    import polars as pl
+except ImportError:
+    pl = None
+
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+except ImportError:
+    pa = None
+    pq = None
+
+try:
+    import plotly.graph_objects as go
+    import plotly.io as pio
+    from plotly.subplots import make_subplots
+except ImportError:
+    go = None
+    pio = None
+    make_subplots = None
+
+
+SERIES_KEYS = [
+    "t",
+    "V",
+    "w",
+    "I_s",
+    "x_pre",
+    "y_post",
+    "E",
+    "r_pre",
+    "r_post",
+    "R",
+    "R_bar",
+    "M",
+    "pre_spike_bin",
+    "post_spike_bin",
+    "is_refractory",
+]
+
+SPIKE_KEYS = ["pre_spike_times", "post_spike_times"]
 
 
 @dataclass
@@ -10,121 +66,325 @@ class Params:
     seed: int = 1
     record_every: float = 1e-4
 
-    r_pre_rate: float = 20.0       # Poisson rate of presynaptic input (Hz)
+    r_pre_rate: float = 20.0
 
-    # LIF membrane  (eq:ref_V)
-    tau_m: float = 0.02            # τ_m  – membrane time constant (s)
-    E_L: float = -65.0             # E_L  – resting potential (mV)
-    V_reset: float = -70.0         # V_reset
-    theta: float = -50.0           # θ    – spike threshold (mV)
-    tau_ref: float = 0.003         # τ_ref – absolute refractory period (s)
-    V0: float = -65.0              # initial membrane potential (mV)
-    ref_remaining0: float = 0.0    # initial refractory time remaining (s)
+    tau_m: float = 0.02
+    E_L: float = -65.0
+    V_reset: float = -70.0
+    theta: float = -50.0
+    tau_ref: float = 0.003
+    V0: float = -65.0
+    ref_remaining0: float = 0.0
 
-    # Synaptic current  (eq:ref_Is)
-    tau_s: float = 0.005           # τ_s
-    R_m: float = 50.0              # R_m  – membrane resistance (MΩ)
-    I_s0: float = 0.0              # initial synaptic current
+    tau_s: float = 0.005
+    R_m: float = 50.0
+    I_s0: float = 0.0
 
-    # STDP eligibility traces  (eq:ref_xpre, eq:ref_ypost)
-    tau_plus: float = 0.02         # τ_+  – pre-synaptic trace decay
-    tau_minus: float = 0.02        # τ_-  – post-synaptic trace decay
-    x_pre0: float = 0.0            # initial pre-synaptic STDP trace
-    y_post0: float = 0.0           # initial post-synaptic STDP trace
+    tau_plus: float = 0.02
+    tau_minus: float = 0.02
+    x_pre0: float = 0.0
+    y_post0: float = 0.0
 
-    # Firing-rate filters  (eq:ref_rpre, eq:ref_rpost)
-    tau_r: float = 0.5             # τ_r
-    r_pre0: float = 0.0            # initial pre-synaptic firing-rate filter
-    r_post0: float = 0.0           # initial post-synaptic firing-rate filter
+    tau_r: float = 0.5
+    r_pre0: float = 0.0
+    r_post0: float = 0.0
 
-    # Eligibility trace  (eq:ref_E)
-    tau_e: float = 0.5             # τ_e
-    E0: float = 0.0                # initial eligibility trace
+    tau_e: float = 0.5
+    E0: float = 0.0
 
-    # Reward baseline  (eq:ref_Rbar)
-    tau_Rbar: float = 5.0          # τ_R̄
-    R_bar0: float = 0.0            # initial reward baseline
-    alpha: float = 0.5             # α   – target r_post / r_pre ratio
+    tau_Rbar: float = 5.0
+    R_bar0: float = 0.0
+    alpha: float = 0.5
 
-    # Plasticity  (eq:ref_pre_E, eq:ref_post_E, eq:ref_w)
-    w0: float = 2.0                # initial weight
-    wmax: float = 10.0             # w_max
-    eta_plus: float = 1e-4         # η_+  – LTP rate
-    eta_minus: float = 1e-4        # η_-  – LTD rate
+    w0: float = 2.0
+    wmax: float = 10.0
+    eta_plus: float = 1e-4
+    eta_minus: float = 1e-4
 
 
-def simulate(p: Params):
+def _sampling_stride(total_rows: int, max_points: int) -> int:
+    if max_points <= 0:
+        raise ValueError("max_points must be positive.")
+    return max(1, (total_rows + max_points - 1) // max_points)
+
+
+def _envelope_bucket_size(total_rows: int, max_points: int, series_count: int = 1) -> int:
+    if max_points <= 0:
+        raise ValueError("max_points must be positive.")
+    if total_rows <= max_points:
+        return max(1, total_rows)
+    points_per_bucket = max(4 * max(1, series_count), 1)
+    bucket_count = max(1, max_points // points_per_bucket)
+    return max(1, (total_rows + bucket_count - 1) // bucket_count)
+
+
+def spike_parquet_path(path: str | Path) -> Path:
+    base = Path(path)
+    return base.with_name(f"{base.stem}.spikes.parquet")
+
+
+class Recorder:
+    def append(self, row: dict[str, float]) -> None:
+        raise NotImplementedError
+
+    def append_spike(self, key: str, value: float) -> None:
+        raise NotImplementedError
+
+    def finalize(self):
+        raise NotImplementedError
+
+
+class MemoryRecorder(Recorder):
+    def __init__(self, capacity: int):
+        self.data = {key: np.zeros(capacity, dtype=np.float64) for key in SERIES_KEYS}
+        self.spikes = {key: [] for key in SPIKE_KEYS}
+        self.k = 0
+
+    def append(self, row: dict[str, float]) -> None:
+        for key, value in row.items():
+            self.data[key][self.k] = value
+        self.k += 1
+
+    def append_spike(self, key: str, value: float) -> None:
+        self.spikes[key].append(value)
+
+    def finalize(self) -> dict[str, np.ndarray]:
+        rec = {key: values[: self.k] for key, values in self.data.items()}
+        for key, values in self.spikes.items():
+            rec[key] = np.asarray(values, dtype=np.float64)
+        return rec
+
+
+class HDF5Recorder(Recorder):
+    def __init__(self, path: str | Path, expected_rows: int, chunk_rows: int, params: Params):
+        if h5py is None:
+            raise ImportError("h5py is required for HDF5 output. Install it with `uv add h5py`.")
+
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = h5py.File(self.path, "w")
+        self.file.attrs["format"] = "neuro-recording-v1"
+        self.file.attrs["params_json"] = json.dumps(asdict(params))
+        self.file.attrs["expected_rows"] = expected_rows
+        self.file.attrs["rows_written"] = 0
+
+        chunk = max(1, min(chunk_rows, expected_rows or chunk_rows))
+        self.datasets = {
+            key: self.file.create_dataset(
+                key,
+                shape=(expected_rows,),
+                maxshape=(None,),
+                dtype="f8",
+                chunks=(chunk,),
+                compression="gzip",
+            )
+            for key in SERIES_KEYS
+        }
+        self.spike_datasets = {
+            key: self.file.create_dataset(
+                key,
+                shape=(0,),
+                maxshape=(None,),
+                dtype="f8",
+                chunks=(chunk,),
+                compression="gzip",
+            )
+            for key in SPIKE_KEYS
+        }
+        self.k = 0
+        self.spike_counts = {key: 0 for key in SPIKE_KEYS}
+
+    def append(self, row: dict[str, float]) -> None:
+        for key, value in row.items():
+            self.datasets[key][self.k] = value
+        self.k += 1
+
+    def append_spike(self, key: str, value: float) -> None:
+        ds = self.spike_datasets[key]
+        idx = self.spike_counts[key]
+        ds.resize((idx + 1,))
+        ds[idx] = value
+        self.spike_counts[key] = idx + 1
+
+    def finalize(self) -> dict[str, str | int]:
+        for ds in self.datasets.values():
+            ds.resize((self.k,))
+        self.file.attrs["rows_written"] = self.k
+        self.file.flush()
+        self.file.close()
+        return {"hdf5_path": str(self.path), "rows_written": self.k}
+
+
+class ParquetRecorder(Recorder):
+    def __init__(self, path: str | Path, chunk_rows: int, params: Params):
+        if pa is None or pq is None:
+            raise ImportError("pyarrow is required for Parquet export. Install it with `uv add pyarrow`.")
+
+        self.path = Path(path)
+        self.spike_path = spike_parquet_path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+        metadata = {
+            b"format": b"neuro-recording-v1",
+            b"params_json": json.dumps(asdict(params)).encode("utf-8"),
+        }
+        self.schema = pa.schema([(key, pa.float64()) for key in SERIES_KEYS], metadata=metadata)
+        self.spike_schema = pa.schema(
+            [("t", pa.float64()), ("spike_type", pa.string())],
+            metadata=metadata,
+        )
+        self.writer = pq.ParquetWriter(self.path, self.schema, compression="zstd")
+        self.spike_writer = pq.ParquetWriter(self.spike_path, self.spike_schema, compression="zstd")
+        self.chunk_rows = chunk_rows
+        self.buffer = {key: [] for key in SERIES_KEYS}
+        self.spike_buffer = {"t": [], "spike_type": []}
+        self.rows_written = 0
+        self.spikes_written = 0
+
+    def _flush_rows(self) -> None:
+        if not self.buffer["t"]:
+            return
+        table = pa.Table.from_pydict(
+            {key: pa.array(values, type=pa.float64()) for key, values in self.buffer.items()},
+            schema=self.schema,
+        )
+        self.writer.write_table(table)
+        self.buffer = {key: [] for key in SERIES_KEYS}
+
+    def _flush_spikes(self) -> None:
+        if not self.spike_buffer["t"]:
+            return
+        table = pa.Table.from_pydict(
+            {
+                "t": pa.array(self.spike_buffer["t"], type=pa.float64()),
+                "spike_type": pa.array(self.spike_buffer["spike_type"], type=pa.string()),
+            },
+            schema=self.spike_schema,
+        )
+        self.spike_writer.write_table(table)
+        self.spike_buffer = {"t": [], "spike_type": []}
+
+    def append(self, row: dict[str, float]) -> None:
+        for key, value in row.items():
+            self.buffer[key].append(float(value))
+        self.rows_written += 1
+        if len(self.buffer["t"]) >= self.chunk_rows:
+            self._flush_rows()
+
+    def append_spike(self, key: str, value: float) -> None:
+        self.spike_buffer["t"].append(float(value))
+        self.spike_buffer["spike_type"].append("pre" if key == "pre_spike_times" else "post")
+        self.spikes_written += 1
+        if len(self.spike_buffer["t"]) >= self.chunk_rows:
+            self._flush_spikes()
+
+    def finalize(self) -> dict[str, str | int]:
+        self._flush_rows()
+        self._flush_spikes()
+        self.writer.close()
+        self.spike_writer.close()
+        return {
+            "parquet_path": str(self.path),
+            "parquet_spikes_path": str(self.spike_path),
+            "rows_written": self.rows_written,
+            "spikes_written": self.spikes_written,
+        }
+
+
+class MultiRecorder(Recorder):
+    def __init__(self, recorders: list[Recorder]):
+        self.recorders = recorders
+
+    def append(self, row: dict[str, float]) -> None:
+        for recorder in self.recorders:
+            recorder.append(row)
+
+    def append_spike(self, key: str, value: float) -> None:
+        for recorder in self.recorders:
+            recorder.append_spike(key, value)
+
+    def finalize(self):
+        results = [recorder.finalize() for recorder in self.recorders]
+        if len(results) == 1:
+            return results[0]
+        merged = {}
+        for result in results:
+            if isinstance(result, dict):
+                merged.update(result)
+        return merged
+
+
+def _build_recorder(
+    p: Params,
+    hdf5_path: str | None,
+    parquet_path: str | None,
+    chunk_rows: int,
+) -> Recorder:
+    n = int(p.T / p.dt)
+    rec_step = max(1, int(p.record_every / p.dt))
+    expected_rows = n // rec_step + 2
+
+    recorders: list[Recorder] = []
+    if hdf5_path:
+        recorders.append(HDF5Recorder(hdf5_path, expected_rows=expected_rows, chunk_rows=chunk_rows, params=p))
+    if parquet_path:
+        recorders.append(ParquetRecorder(parquet_path, chunk_rows=chunk_rows, params=p))
+
+    if not recorders:
+        return MemoryRecorder(expected_rows)
+    if len(recorders) == 1:
+        return recorders[0]
+    return MultiRecorder(recorders)
+
+
+def simulate(
+    p: Params,
+    hdf5_path: str | None = None,
+    parquet_path: str | None = None,
+    chunk_rows: int = 100_000,
+):
     n = int(p.T / p.dt)
     period_steps = max(1, round(1.0 / (p.r_pre_rate * p.dt)))
+    rec_step = max(1, int(p.record_every / p.dt))
 
-    # ------------------------------------------------------------------ #
-    # State variables – names and grouping follow analysis.tex Sec. 1–3  #
-    # ------------------------------------------------------------------ #
-
-    # Membrane
     V = p.V0
     ref_remaining = p.ref_remaining0
-
-    # Input subsystem (Sec. 1 / eq:ref_Is, eq:ref_xpre, eq:ref_rpre)
-    I_s   = p.I_s0
+    I_s = p.I_s0
     x_pre = p.x_pre0
     r_pre = p.r_pre0
-
-    # Postsynaptic subsystem (Sec. 1 / eq:ref_ypost..eq:ref_w)
     y_post = p.y_post0
     r_post = p.r_post0
-    E      = p.E0
-    R_bar  = p.R_bar0
-    w      = p.w0
+    E = p.E0
+    R_bar = p.R_bar0
+    w = p.w0
 
-    rec_step = max(1, int(p.record_every / p.dt))
-    m = n // rec_step + 2
-
-    rec = {k: np.zeros(m) for k in [
-        "t", "V", "w", "I_s",
-        "x_pre", "y_post", "E",
-        "r_pre", "r_post", "R", "R_bar", "M",
-        "pre_spike_bin", "post_spike_bin", "is_refractory",
-    ]}
-
-    pre_spike_times = []
-    post_spike_times = []
-    k = 0
+    recorder = _build_recorder(p, hdf5_path=hdf5_path, parquet_path=parquet_path, chunk_rows=chunk_rows)
 
     for step in range(n):
         t = step * p.dt
 
-        # ------------------------------------------------------------------ #
-        # Sec. 2 – Pre-synaptic spike event                                  #
-        # ------------------------------------------------------------------ #
         pre_spike = 1 if (step % period_steps == 0) else 0
         if pre_spike:
-            pre_spike_times.append(t)
-            I_s   += 1.0   # eq:ref_pre_Is
-            x_pre += 1.0   # eq:ref_pre_xpre
-            r_pre += 1.0   # eq:ref_pre_rpre
-            E -= p.eta_minus * w * y_post  # eq:ref_pre_E  (LTD)
+            recorder.append_spike("pre_spike_times", t)
+            I_s += 1.0
+            x_pre += 1.0
+            r_pre += 1.0
+            E -= p.eta_minus * w * y_post
 
-        # ------------------------------------------------------------------ #
-        # Sec. 1 – Inter-spike dynamics: input subsystem                     #
-        # ------------------------------------------------------------------ #
-        I_s   += p.dt * (-I_s   / p.tau_s)      # eq:ref_Is
-        x_pre += p.dt * (-x_pre / p.tau_plus)   # eq:ref_xpre
-        r_pre += p.dt * (-r_pre / p.tau_r)      # eq:ref_rpre
+        I_s += p.dt * (-I_s / p.tau_s)
+        x_pre += p.dt * (-x_pre / p.tau_plus)
+        r_pre += p.dt * (-r_pre / p.tau_r)
 
-        # ------------------------------------------------------------------ #
-        # Sec. 1 – Inter-spike dynamics: membrane potential                  #
-        # ------------------------------------------------------------------ #
-        post_spike    = 0
+        post_spike = 0
         is_refractory = 1 if ref_remaining > 0.0 else 0
 
         if ref_remaining <= 0.0:
-            dV    = (p.dt / p.tau_m) * (-(V - p.E_L) + p.R_m * w * I_s)  # eq:ref_V
+            dV = (p.dt / p.tau_m) * (-(V - p.E_L) + p.R_m * w * I_s)
             V_new = V + dV
             if V < p.theta and V_new >= p.theta:
                 post_spike = 1
-                post_spike_times.append(t)
-                V             = p.V_reset   # eq:ref_post_V
+                recorder.append_spike("post_spike_times", t)
+                V = p.V_reset
                 ref_remaining = p.tau_ref
             else:
                 V = V_new
@@ -132,153 +392,747 @@ def simulate(p: Params):
             ref_remaining -= p.dt
             V = p.V_reset
 
-        # ------------------------------------------------------------------ #
-        # Sec. 3 – Post-synaptic spike event                                 #
-        # ------------------------------------------------------------------ #
         if post_spike:
-            y_post += 1.0  # eq:ref_post_ypost
-            r_post += 1.0  # eq:ref_post_rpost
-            E += p.eta_plus * (p.wmax - w) * x_pre  # eq:ref_post_E  (LTP)
+            y_post += 1.0
+            r_post += 1.0
+            E += p.eta_plus * (p.wmax - w) * x_pre
 
-        # ------------------------------------------------------------------ #
-        # Sec. 1 – Inter-spike dynamics: postsynaptic subsystem              #
-        # ------------------------------------------------------------------ #
-        y_post += p.dt * (-y_post / p.tau_minus)  # eq:ref_ypost
-        r_post += p.dt * (-r_post / p.tau_r)      # eq:ref_rpost
-        E      += p.dt * (-E      / p.tau_e)      # eq:ref_E
+        y_post += p.dt * (-y_post / p.tau_minus)
+        r_post += p.dt * (-r_post / p.tau_r)
+        E += p.dt * (-E / p.tau_e)
 
-        R     = -(r_post - p.alpha * r_pre) ** 2                    # instantaneous reward
-        R_bar += (p.dt / p.tau_Rbar) * (-R_bar + R)                # eq:ref_Rbar
-        M     = R - R_bar                                           # neuromodulator: R - R̄
-        w    += p.dt * M * E                                        # eq:ref_w
-        w     = min(p.wmax, max(0.0, w))
+        R = -(r_post - p.alpha * r_pre) ** 2
+        R_bar += (p.dt / p.tau_Rbar) * (-R_bar + R)
+        M = R - R_bar
+        w += p.dt * M * E
+        w = min(p.wmax, max(0.0, w))
 
         if step % rec_step == 0:
-            rec["t"][k]              = t
-            rec["V"][k]              = V
-            rec["w"][k]              = w
-            rec["I_s"][k]            = I_s
-            rec["x_pre"][k]          = x_pre
-            rec["y_post"][k]         = y_post
-            rec["E"][k]              = E
-            rec["r_pre"][k]          = r_pre
-            rec["r_post"][k]         = r_post
-            rec["R"][k]              = R
-            rec["R_bar"][k]          = R_bar
-            rec["M"][k]              = M
-            rec["pre_spike_bin"][k]  = pre_spike
-            rec["post_spike_bin"][k] = post_spike
-            rec["is_refractory"][k]  = is_refractory
-            k += 1
+            recorder.append(
+                {
+                    "t": t,
+                    "V": V,
+                    "w": w,
+                    "I_s": I_s,
+                    "x_pre": x_pre,
+                    "y_post": y_post,
+                    "E": E,
+                    "r_pre": r_pre,
+                    "r_post": r_post,
+                    "R": R,
+                    "R_bar": R_bar,
+                    "M": M,
+                    "pre_spike_bin": pre_spike,
+                    "post_spike_bin": post_spike,
+                    "is_refractory": is_refractory,
+                }
+            )
 
-    for kk in rec:
-        rec[kk] = rec[kk][:k]
-
-    rec["pre_spike_times"]  = np.array(pre_spike_times)
-    rec["post_spike_times"] = np.array(post_spike_times)
-    return rec
+    return recorder.finalize()
 
 
-def plot_all_in_one_figure(rec, p):
-    PANELS = {
-        "raster": True,
-        "voltage": True,
-        "refractory": False,
-        "synapse": True,
-        "stdp_traces": True,
-        "eligibility": True,
-        "rates": True,
-        "reward": True,
-        "weight": True,
-        "binned_spikes": False,
+def polars_frame_from_hdf5(
+    path: str | Path,
+    columns: list[str] | None = None,
+    start: int = 0,
+    stop: int | None = None,
+    stride: int = 1,
+    lazy: bool = True,
+):
+    if h5py is None:
+        raise ImportError("h5py is required to read HDF5 recordings.")
+    if pl is None:
+        raise ImportError("polars is required for Polars-based analysis. Install it with `uv add polars`.")
+
+    selected = columns or SERIES_KEYS
+    with h5py.File(path, "r") as handle:
+        arrays = {key: np.asarray(handle[key][start:stop:stride]) for key in selected}
+    frame = pl.DataFrame(arrays)
+    return frame.lazy() if lazy else frame
+
+
+def polars_frame_from_parquet(
+    path: str | Path,
+    columns: list[str] | None = None,
+    stride: int = 1,
+    lazy: bool = True,
+):
+    if pl is None:
+        raise ImportError("polars is required for Parquet analysis. Install it with `uv add polars`.")
+
+    selected = columns or SERIES_KEYS
+    frame = pl.scan_parquet(str(path)).select(selected)
+    if stride > 1:
+        frame = (
+            frame.with_row_index("row_idx")
+            .filter((pl.col("row_idx") % stride) == 0)
+            .drop("row_idx")
+        )
+    return frame if lazy else frame.collect()
+
+
+def _filter_spike_times(spikes: dict[str, np.ndarray], x0: float | None = None, x1: float | None = None) -> dict[str, np.ndarray]:
+    if x0 is None and x1 is None:
+        return spikes
+
+    filtered = {}
+    for key, values in spikes.items():
+        mask = np.ones(len(values), dtype=bool)
+        if x0 is not None:
+            mask &= values >= x0
+        if x1 is not None:
+            mask &= values <= x1
+        filtered[key] = values[mask]
+    return filtered
+
+
+def read_spike_times_hdf5(path: str | Path, x0: float | None = None, x1: float | None = None) -> dict[str, np.ndarray]:
+    if h5py is None:
+        raise ImportError("h5py is required to read HDF5 spike times.")
+    with h5py.File(path, "r") as handle:
+        spikes = {key: np.asarray(handle[key]) for key in SPIKE_KEYS}
+    return _filter_spike_times(spikes, x0=x0, x1=x1)
+
+
+def read_spike_times_parquet(path: str | Path, x0: float | None = None, x1: float | None = None) -> dict[str, np.ndarray]:
+    if pl is None:
+        raise ImportError("polars is required to read Parquet spike times.")
+
+    spike_path = spike_parquet_path(path)
+    if not spike_path.exists():
+        return {"pre_spike_times": np.array([]), "post_spike_times": np.array([])}
+
+    spikes = pl.read_parquet(str(spike_path))
+    pre = spikes.filter(pl.col("spike_type") == "pre").get_column("t").to_numpy()
+    post = spikes.filter(pl.col("spike_type") == "post").get_column("t").to_numpy()
+    return _filter_spike_times({"pre_spike_times": pre, "post_spike_times": post}, x0=x0, x1=x1)
+
+
+def _downsample_memory_rec(rec: dict[str, np.ndarray], max_points: int) -> dict[str, np.ndarray]:
+    if len(rec["t"]) <= max_points:
+        return rec
+    stride = _sampling_stride(len(rec["t"]), max_points)
+    sampled = {
+        key: values[::stride] if key not in SPIKE_KEYS else values
+        for key, values in rec.items()
     }
+    return sampled
 
+
+def _add_bucket_extrema_indices(
+    indices: set[int],
+    values,
+    total_rows: int,
+    bucket_size: int,
+    offset: int = 0,
+) -> None:
+    if total_rows == 0:
+        return
+
+    indices.add(offset)
+    indices.add(offset + total_rows - 1)
+
+    for local_start in range(0, total_rows, bucket_size):
+        local_stop = min(local_start + bucket_size, total_rows)
+        start = offset + local_start
+        stop = offset + local_stop
+        chunk = np.asarray(values[start:stop])
+        if chunk.size == 0:
+            continue
+        candidates = {
+            start,
+            stop - 1,
+            start + int(np.argmin(chunk)),
+            start + int(np.argmax(chunk)),
+        }
+        indices.update(candidates)
+
+
+def _collect_memory_envelope_frame(
+    rec: dict[str, np.ndarray],
+    columns: list[str],
+    max_points: int,
+    x0: float | None = None,
+    x1: float | None = None,
+):
+    if pl is None:
+        raise ImportError("polars is required for plotting. Install it with `uv add polars`.")
+
+    if x0 is None and x1 is None:
+        series = {key: rec[key] for key in columns}
+    else:
+        mask = np.ones(len(rec["t"]), dtype=bool)
+        if x0 is not None:
+            mask &= rec["t"] >= x0
+        if x1 is not None:
+            mask &= rec["t"] <= x1
+        series = {key: rec[key][mask] for key in columns}
+
+    total_rows = len(series["t"])
+    if total_rows <= max_points:
+        frame = pl.DataFrame(series)
+        spikes = _filter_spike_times({key: rec[key] for key in SPIKE_KEYS}, x0=x0, x1=x1)
+        return frame, spikes
+
+    data_columns = [column for column in columns if column != "t"]
+    bucket_size = _envelope_bucket_size(total_rows, max_points, series_count=len(data_columns))
+    indices: set[int] = set()
+    for column in data_columns:
+        _add_bucket_extrema_indices(indices, series[column], total_rows, bucket_size)
+
+    idx = np.asarray(sorted(indices), dtype=np.int64)
+    frame = pl.DataFrame({key: series[key][idx] for key in columns})
+    spikes = _filter_spike_times({key: rec[key] for key in SPIKE_KEYS}, x0=x0, x1=x1)
+    return frame, spikes
+
+
+def _collect_hdf5_envelope_frame(
+    path: str | Path,
+    columns: list[str],
+    max_points: int,
+    x0: float | None = None,
+    x1: float | None = None,
+):
+    if h5py is None:
+        raise ImportError("h5py is required to read HDF5 recordings.")
+    if pl is None:
+        raise ImportError("polars is required for plotting. Install it with `uv add polars`.")
+
+    with h5py.File(path, "r") as handle:
+        total_rows = int(handle.attrs["rows_written"])
+        if total_rows == 0:
+            frame = pl.DataFrame({key: np.array([]) for key in columns})
+            spikes = read_spike_times_hdf5(path, x0=x0, x1=x1)
+            return frame, spikes
+
+        t0 = float(handle["t"][0])
+        dt = float(handle["t"][1] - handle["t"][0]) if total_rows > 1 else 1.0
+        start_idx = 0 if x0 is None else max(0, int(np.floor((x0 - t0) / dt)))
+        stop_idx = total_rows if x1 is None else min(total_rows, int(np.ceil((x1 - t0) / dt)) + 1)
+        slice_rows = max(0, stop_idx - start_idx)
+
+        if slice_rows <= max_points:
+            frame = pl.DataFrame({key: np.asarray(handle[key][start_idx:stop_idx]) for key in columns})
+            spikes = read_spike_times_hdf5(path, x0=x0, x1=x1)
+            return frame, spikes
+
+        data_columns = [column for column in columns if column != "t"]
+        bucket_size = _envelope_bucket_size(slice_rows, max_points, series_count=len(data_columns))
+        indices: set[int] = set()
+        for column in data_columns:
+            _add_bucket_extrema_indices(indices, handle[column], slice_rows, bucket_size, offset=start_idx)
+
+        idx = np.asarray(sorted(indices), dtype=np.int64)
+        frame = pl.DataFrame({key: np.asarray(handle[key][idx]) for key in columns})
+    spikes = read_spike_times_hdf5(path, x0=x0, x1=x1)
+    return frame, spikes
+
+
+def _count_parquet_rows(path: str | Path) -> int:
+    if pl is None:
+        raise ImportError("polars is required to read Parquet recordings.")
+    count_df = pl.scan_parquet(str(path)).select(pl.len().alias("n")).collect()
+    return int(count_df["n"][0])
+
+
+def _collect_parquet_envelope_frame(
+    path: str | Path,
+    columns: list[str],
+    max_points: int,
+    x0: float | None = None,
+    x1: float | None = None,
+):
+    if pl is None:
+        raise ImportError("polars is required to read Parquet recordings.")
+
+    scan = pl.scan_parquet(str(path))
+    if x0 is not None:
+        scan = scan.filter(pl.col("t") >= x0)
+    if x1 is not None:
+        scan = scan.filter(pl.col("t") <= x1)
+
+    total_rows = int(scan.select(pl.len().alias("n")).collect()["n"][0])
+    if total_rows <= max_points:
+        frame = scan.select(columns).collect()
+        spikes = read_spike_times_parquet(path, x0=x0, x1=x1)
+        return frame, spikes
+
+    data_columns = [column for column in columns if column != "t"]
+    bucket_size = _envelope_bucket_size(total_rows, max_points, series_count=len(data_columns))
+    scan = scan.select(columns).with_row_index("row_idx")
+    aggs = [
+        pl.col("row_idx").first().alias("first_idx"),
+        pl.col("row_idx").last().alias("last_idx"),
+    ]
+    for column in data_columns:
+        aggs.extend(
+            [
+                pl.col(column).arg_min().alias(f"{column}__arg_min"),
+                pl.col(column).arg_max().alias(f"{column}__arg_max"),
+            ]
+        )
+
+    summary = (
+        scan.group_by((pl.col("row_idx") // bucket_size).alias("bucket"), maintain_order=True)
+        .agg(*aggs)
+        .collect()
+    )
+
+    indices: set[int] = {0, total_rows - 1}
+    for row in summary.iter_rows(named=True):
+        first_idx = int(row["first_idx"])
+        last_idx = int(row["last_idx"])
+        indices.add(first_idx)
+        indices.add(last_idx)
+        for column in data_columns:
+            indices.add(first_idx + int(row[f"{column}__arg_min"]))
+            indices.add(first_idx + int(row[f"{column}__arg_max"]))
+
+    idx = sorted(indices)
+    frame = (
+        scan
+        .filter(pl.col("row_idx").is_in(idx))
+        .collect()
+        .sort("row_idx")
+        .drop("row_idx")
+    )
+    spikes = read_spike_times_parquet(path, x0=x0, x1=x1)
+    return frame, spikes
+
+
+def load_time_series_frame(
+    rec_or_path,
+    columns: list[str],
+    max_points: int = 40_000,
+    x0: float | None = None,
+    x1: float | None = None,
+):
+    if isinstance(rec_or_path, dict) and "t" in rec_or_path:
+        return _collect_memory_envelope_frame(rec_or_path, columns=columns, max_points=max_points, x0=x0, x1=x1)
+
+    if isinstance(rec_or_path, dict):
+        if "parquet_path" in rec_or_path:
+            return load_time_series_frame(rec_or_path["parquet_path"], columns=columns, max_points=max_points, x0=x0, x1=x1)
+        if "hdf5_path" in rec_or_path:
+            return load_time_series_frame(rec_or_path["hdf5_path"], columns=columns, max_points=max_points, x0=x0, x1=x1)
+
+    if isinstance(rec_or_path, (str, Path)):
+        path = Path(rec_or_path)
+        if path.suffix.lower() == ".parquet":
+            return _collect_parquet_envelope_frame(path, columns=columns, max_points=max_points, x0=x0, x1=x1)
+        return _collect_hdf5_envelope_frame(path, columns=columns, max_points=max_points, x0=x0, x1=x1)
+
+    raise TypeError(f"Unsupported plot source: {type(rec_or_path)!r}")
+
+
+def load_plot_frame(rec_or_path, columns: list[str], max_points: int = 40_000):
+    if isinstance(rec_or_path, dict) and "t" in rec_or_path:
+        sampled = _downsample_memory_rec(rec_or_path, max_points=max_points)
+        if pl is None:
+            raise ImportError("polars is required for plotting. Install it with `uv add polars`.")
+        frame = pl.DataFrame({key: sampled[key] for key in columns})
+        spikes = {key: sampled[key] for key in SPIKE_KEYS}
+        return frame, spikes
+
+    if isinstance(rec_or_path, dict):
+        if "parquet_path" in rec_or_path:
+            return load_plot_frame(rec_or_path["parquet_path"], columns=columns, max_points=max_points)
+        if "hdf5_path" in rec_or_path:
+            return load_plot_frame(rec_or_path["hdf5_path"], columns=columns, max_points=max_points)
+
+    if isinstance(rec_or_path, (str, Path)):
+        path = Path(rec_or_path)
+        suffix = path.suffix.lower()
+
+        if suffix == ".parquet":
+            if pl is None:
+                raise ImportError("polars is required to read Parquet recordings.")
+            total = _count_parquet_rows(path)
+            stride = _sampling_stride(total, max_points)
+            frame = polars_frame_from_parquet(path, columns=columns, stride=stride, lazy=False)
+            spikes = read_spike_times_parquet(path)
+            return frame, spikes
+
+        if h5py is None:
+            raise ImportError("h5py is required to read HDF5 recordings.")
+        with h5py.File(path, "r") as handle:
+            total = int(handle.attrs["rows_written"])
+        stride = _sampling_stride(total, max_points)
+        frame = polars_frame_from_hdf5(path, columns=columns, stride=stride, lazy=False)
+        spikes = read_spike_times_hdf5(path)
+        return frame, spikes
+
+    raise TypeError(f"Unsupported plot source: {type(rec_or_path)!r}")
+
+
+def _plotly_values(values) -> list[float | None]:
+    arr = np.asarray(values)
+    if arr.size == 0:
+        return []
+    if arr.dtype.kind == "f":
+        return [None if not np.isfinite(value) else float(value) for value in arr]
+    return arr.tolist()
+
+
+def write_plotly_html(fig, output_html: str) -> str:
+    if pio is None:
+        raise ImportError("plotly is required for HTML export. Install it with `uv add plotly`.")
+    pio.write_html(
+        fig,
+        file=output_html,
+        full_html=True,
+        include_plotlyjs="directory",
+        auto_open=False,
+        validate=True,
+    )
+    return output_html
+
+
+def plot_all_in_one_figure_matplotlib(rec, p: Params):
     t = rec["t"]
-    active = [k for k, v in PANELS.items() if v]
-    if not active:
-        raise ValueError("No panels enabled.")
+    fig, axs = plt.subplots(7, 1, figsize=(19, 10), sharex=True)
 
-    fig, axs = plt.subplots(len(active), 1, figsize=(19, 10), sharex=True)
-    if len(active) == 1:
-        axs = [axs]
+    axs[0].eventplot([rec["pre_spike_times"], rec["post_spike_times"]], lineoffsets=[1, 0], linelengths=0.8)
+    axs[0].set_yticks([0, 1])
+    axs[0].set_yticklabels(["post", "pre"])
+    axs[0].set_title("Spike times")
 
-    i = 0
+    axs[1].plot(t, rec["V"])
+    axs[1].axhline(p.theta, linestyle="--", label="theta")
+    axs[1].axhline(p.V_reset, linestyle=":", label="V_reset")
+    axs[1].legend(loc="upper right")
+    axs[1].set_title("Membrane potential V(t)")
 
-    if PANELS["raster"]:
-        axs[i].eventplot([rec["pre_spike_times"], rec["post_spike_times"]], lineoffsets=[1, 0], linelengths=0.8)
-        axs[i].set_yticks([0, 1])
-        axs[i].set_yticklabels(["post", "pre"])
-        axs[i].set_title("Spike times")
-        i += 1
+    axs[2].plot(t, rec["I_s"])
+    axs[2].set_title("Synaptic current I_s(t)")
 
-    if PANELS["voltage"]:
-        axs[i].plot(t, rec["V"])
-        axs[i].axhline(p.theta, linestyle="--", label="θ")
-        axs[i].axhline(p.V_reset, linestyle=":", label="V_reset")
-        axs[i].set_ylabel("mV")
-        axs[i].set_title("Membrane potential V(t)")
-        axs[i].legend(loc="upper right")
-        i += 1
+    axs[3].plot(t, rec["x_pre"], label="x_pre")
+    axs[3].plot(t, rec["y_post"], label="y_post")
+    axs[3].legend(loc="upper right")
+    axs[3].set_title("STDP traces")
 
-    if PANELS["refractory"]:
-        axs[i].plot(t, rec["is_refractory"])
-        axs[i].set_title("Refractory state")
-        i += 1
+    axs[4].plot(t, rec["E"])
+    axs[4].set_title("Eligibility trace E(t)")
 
-    if PANELS["synapse"]:
-        axs[i].plot(t, rec["I_s"])  # eq:ref_Is
-        axs[i].set_title("Synaptic current I_s(t)")
-        i += 1
+    axs[5].plot(t, rec["r_pre"], label="r_pre")
+    axs[5].plot(t, rec["r_post"], label="r_post")
+    axs[5].plot(t, p.alpha * rec["r_pre"], linestyle="--", label="target")
+    axs[5].legend(loc="upper right")
+    axs[5].set_title("Firing rates")
 
-    if PANELS["stdp_traces"]:
-        axs[i].plot(t, rec["x_pre"],  label="x_pre")
-        axs[i].plot(t, rec["y_post"], label="y_post")
-        axs[i].legend(loc="upper right")
-        axs[i].set_title("STDP traces  (eq:ref_xpre, eq:ref_ypost)")
-        i += 1
+    axs[6].plot(t, rec["R"], label="R")
+    axs[6].plot(t, rec["R_bar"], label="R_bar")
+    axs[6].plot(t, rec["M"], label="M")
+    axs[6].plot(t, rec["w"], label="w")
+    axs[6].legend(loc="upper right")
+    axs[6].set_title("Reward and weight")
+    axs[6].set_xlabel("time (s)")
 
-    if PANELS["eligibility"]:
-        axs[i].plot(t, rec["E"])
-        axs[i].set_title("Eligibility trace E(t)")
-        i += 1
-
-    if PANELS["rates"]:
-        axs[i].plot(t, rec["r_pre"], label="r_pre")
-        axs[i].plot(t, rec["r_post"], label="r_post")
-        axs[i].plot(t, p.alpha * rec["r_pre"], linestyle="--", label="target (α·r_pre)")
-        axs[i].legend(loc="upper right")
-        axs[i].set_ylabel("Hz")
-        axs[i].set_title("Firing rates (exponential filter, τ_r)")
-        i += 1
-
-    if PANELS["reward"]:
-        axs[i].plot(t, rec["R"],     label="R  (instantaneous)")
-        axs[i].plot(t, rec["R_bar"], label="R̄  (eq:ref_Rbar)")
-        axs[i].plot(t, rec["M"],     label="M = R − R̄  (eq:ref_w)")
-        axs[i].legend(loc="upper right")
-        axs[i].set_title("Reward, baseline, neuromodulator")
-        i += 1
-
-    if PANELS["weight"]:
-        axs[i].plot(t, rec["w"])
-        axs[i].set_title("Synaptic weight w(t)")
-        i += 1
-
-    if PANELS["binned_spikes"]:
-        axs[i].plot(t, rec["pre_spike_bin"], label="pre")
-        axs[i].plot(t, rec["post_spike_bin"], label="post")
-        axs[i].legend(loc="upper right")
-        axs[i].set_title("Binned spikes")
-        i += 1
-
-    axs[-1].set_xlabel("time (s)")
     plt.tight_layout()
     plt.savefig("simulation.png")
     plt.show()
 
 
-if __name__ == "__main__":
-    p = Params()
+def build_all_in_one_plotly_figure(
+    rec_or_path,
+    p: Params,
+    max_points: int = 40_000,
+    x0: float | None = None,
+    x1: float | None = None,
+):
+    if go is None or make_subplots is None:
+        raise ImportError("plotly is required for interactive plotting. Install it with `uv add plotly`.")
 
-    rec = simulate(p)
-    plot_all_in_one_figure(rec, p)
+    columns = ["t", "V", "I_s", "x_pre", "y_post", "E", "r_pre", "r_post", "R", "R_bar", "M", "w"]
+    frame, spikes = load_time_series_frame(rec_or_path, columns=columns, max_points=max_points, x0=x0, x1=x1)
+    arrays = {col: _plotly_values(frame[col].to_numpy()) for col in columns}
+    t = arrays["t"]
+
+    fig = make_subplots(
+        rows=7,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        subplot_titles=(
+            "Spike times",
+            "Membrane potential",
+            "Synaptic current",
+            "STDP traces",
+            "Eligibility trace",
+            "Firing rates",
+            "Reward and weight",
+        ),
+    )
+
+    fig.add_trace(
+        go.Scattergl(
+            x=_plotly_values(spikes["pre_spike_times"]),
+            y=_plotly_values(np.ones(len(spikes["pre_spike_times"]), dtype=np.float64)),
+            mode="markers",
+            name="pre",
+            marker={"size": 4},
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scattergl(
+            x=_plotly_values(spikes["post_spike_times"]),
+            y=_plotly_values(np.zeros(len(spikes["post_spike_times"]), dtype=np.float64)),
+            mode="markers",
+            name="post",
+            marker={"size": 4},
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(go.Scattergl(x=t, y=arrays["V"], name="V"), row=2, col=1)
+    fig.add_hline(y=p.theta, line_dash="dash", row=2, col=1)
+    fig.add_hline(y=p.V_reset, line_dash="dot", row=2, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["I_s"], name="I_s"), row=3, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["x_pre"], name="x_pre"), row=4, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["y_post"], name="y_post"), row=4, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["E"], name="E"), row=5, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["r_pre"], name="r_pre"), row=6, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["r_post"], name="r_post"), row=6, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=_plotly_values(p.alpha * np.asarray(frame["r_pre"].to_numpy())), name="target"), row=6, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["R"], name="R"), row=7, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["R_bar"], name="R_bar"), row=7, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["M"], name="M"), row=7, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["w"], name="w"), row=7, col=1)
+
+    fig.update_layout(height=1600, width=1400, title="Neuromodulated STDP simulation", showlegend=True)
+    fig.update_xaxes(title_text="time (s)", row=7, col=1)
+    if x0 is not None and x1 is not None:
+        fig.update_xaxes(range=[x0, x1], row=7, col=1)
+    return fig
+
+
+def plot_all_in_one_plotly(rec_or_path, p: Params, output_html: str = "simulation.html", max_points: int = 40_000):
+    fig = build_all_in_one_plotly_figure(rec_or_path, p, max_points=max_points)
+    return write_plotly_html(fig, output_html)
+
+
+def _plotly_package_js_path() -> Path:
+    if go is None or pio is None:
+        raise ImportError("plotly is required for the adaptive viewer. Install it with `uv add plotly`.")
+    candidates = [
+        Path(pio.__file__).resolve().parents[1] / "package_data" / "plotly.min.js",
+        Path(go.__file__).resolve().parents[1] / "package_data" / "plotly.min.js",
+        Path.cwd() / "plotly.min.js",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"Could not locate Plotly JS asset. Checked: {', '.join(str(path) for path in candidates)}")
+
+
+def serve_zoom_adaptive_plot(source_path: str | Path, p: Params, host: str = "127.0.0.1", port: int = 8050, max_points: int = 40_000):
+    source = Path(source_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Plot source does not exist: {source}")
+
+    plotly_js_path = _plotly_package_js_path()
+
+    html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Neuromodulated STDP simulation</title>
+  <style>
+    html, body, #plot {{
+      height: 100%;
+      width: 100%;
+      margin: 0;
+      background: #ffffff;
+    }}
+  </style>
+</head>
+<body>
+  <div id="plot"></div>
+  <script src="/plotly.min.js"></script>
+  <script>
+    const BASE_MAX_POINTS = {max_points};
+    const plotDiv = document.getElementById("plot");
+    let isUpdating = false;
+    let pendingTimer = null;
+    let relayoutHandlerAttached = false;
+
+    function relayoutRange(eventData) {{
+      if ("xaxis.range[0]" in eventData && "xaxis.range[1]" in eventData) {{
+        return [Number(eventData["xaxis.range[0]"]), Number(eventData["xaxis.range[1]"])];
+      }}
+      if ("xaxis7.range[0]" in eventData && "xaxis7.range[1]" in eventData) {{
+        return [Number(eventData["xaxis7.range[0]"]), Number(eventData["xaxis7.range[1]"])];
+      }}
+      if ("xaxis.autorange" in eventData || "xaxis7.autorange" in eventData) {{
+        return null;
+      }}
+      return undefined;
+    }}
+
+    function attachRelayoutHandler() {{
+      if (relayoutHandlerAttached || typeof plotDiv.on !== "function") {{
+        return;
+      }}
+      plotDiv.on("plotly_relayout", (eventData) => {{
+        if (isUpdating) {{
+          return;
+        }}
+        const range = relayoutRange(eventData);
+        if (range === undefined) {{
+          return;
+        }}
+        clearTimeout(pendingTimer);
+        pendingTimer = setTimeout(() => updateFigure(range), 120);
+      }});
+      relayoutHandlerAttached = true;
+    }}
+
+    async function fetchFigure(range) {{
+      const params = new URLSearchParams();
+      params.set("max_points", String(BASE_MAX_POINTS));
+      if (range) {{
+        params.set("x0", String(range[0]));
+        params.set("x1", String(range[1]));
+      }}
+      const response = await fetch("/figure?" + params.toString());
+      if (!response.ok) {{
+        throw new Error("Failed to fetch figure: " + response.status);
+      }}
+      return await response.json();
+    }}
+
+    async function updateFigure(range) {{
+      if (isUpdating) {{
+        return;
+      }}
+      isUpdating = true;
+      try {{
+        const fig = await fetchFigure(range);
+        await Plotly.react(plotDiv, fig.data, fig.layout, {{ responsive: true }});
+        attachRelayoutHandler();
+      }} finally {{
+        isUpdating = false;
+      }}
+    }}
+
+    updateFigure(null);
+  </script>
+</body>
+</html>
+"""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path in {"/", "/index.html"}:
+                body = html.encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            if parsed.path == "/plotly.min.js":
+                body = plotly_js_path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            if parsed.path == "/favicon.ico":
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self.end_headers()
+                return
+
+            if parsed.path == "/figure":
+                query = parse_qs(parsed.query)
+                x0 = float(query["x0"][0]) if "x0" in query else None
+                x1 = float(query["x1"][0]) if "x1" in query else None
+                local_max_points = int(query.get("max_points", [str(max_points)])[0])
+                fig = build_all_in_one_plotly_figure(source, p, max_points=local_max_points, x0=x0, x1=x1)
+                body = json.dumps(fig.to_plotly_json()).encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            self.send_error(HTTPStatus.NOT_FOUND)
+
+        def log_message(self, fmt, *args):
+            return
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"Serving zoom-adaptive plot at http://{host}:{port}")
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Simulate neuromodulated STDP with optional HDF5 and Parquet output.")
+    parser.add_argument("--hdf5", type=str, default=None, help="Write recorded state to an HDF5 file.")
+    parser.add_argument("--parquet", type=str, default=None, help="Write recorded state to a streamed Parquet file.")
+    parser.add_argument("--plot-backend", choices=["matplotlib", "plotly", "server"], default="plotly")
+    parser.add_argument("--plot-html", type=str, default="simulation.html")
+    parser.add_argument("--chunk-rows", type=int, default=100_000)
+    parser.add_argument("--max-plot-points", type=int, default=40_000)
+    parser.add_argument("--host", type=str, default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8050)
+    parser.add_argument("--reuse-existing", action="store_true", help="For the server backend, reuse an existing HDF5/Parquet file instead of rerunning the simulation.")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    params = Params(T=2000)
+
+    if args.plot_backend == "server" and not (args.parquet or args.hdf5):
+        raise ValueError("The server backend requires `--parquet` or `--hdf5` so zoom requests can be resampled from disk.")
+
+    existing_server_source = None
+    if args.plot_backend == "server" and args.reuse_existing:
+        for candidate in (args.parquet, args.hdf5):
+            if candidate and Path(candidate).exists():
+                existing_server_source = candidate
+                break
+
+    rec = None
+    if existing_server_source is None:
+        rec = simulate(
+            params,
+            hdf5_path=args.hdf5,
+            parquet_path=args.parquet,
+            chunk_rows=args.chunk_rows,
+        )
+
+    if args.plot_backend == "matplotlib":
+        if isinstance(rec, dict) and "t" in rec:
+            plot_all_in_one_figure_matplotlib(rec, params)
+        else:
+            raise ValueError("Matplotlib plotting requires in-memory records. Use Plotly for HDF5/Parquet-backed runs.")
+    elif args.plot_backend == "server":
+        plot_source = existing_server_source or args.parquet or args.hdf5
+        serve_zoom_adaptive_plot(
+            plot_source,
+            params,
+            host=args.host,
+            port=args.port,
+            max_points=args.max_plot_points,
+        )
+    else:
+        plot_source = args.parquet or args.hdf5 or rec
+        output_html = plot_all_in_one_plotly(
+            plot_source,
+            params,
+            output_html=args.plot_html,
+            max_points=args.max_plot_points,
+        )
+        print(f"Wrote interactive plot to {output_html}")
