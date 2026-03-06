@@ -42,8 +42,8 @@ These are fully determined by initial conditions set at the last presynaptic spi
     \frac{dy_{\mathrm{post}}}{dt} &= -\frac{y_{\mathrm{post}}}{\tau_-}, \label{eq:inter_ypost} \\[6pt]
     \frac{dE}{dt} &= -\frac{E}{\tau_e}, \label{eq:inter_E} \\[6pt]
     \frac{dr_{\mathrm{post}}}{dt} &= -\frac{r_{\mathrm{post}}}{\tau_r}, \label{eq:inter_rpost} \\[6pt]
-    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \label{eq:inter_Rbar} \\[6pt]
-    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E. \label{eq:inter_w}
+    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \alpha\, r_{\mathrm{pre}}\bigr)^2, \label{eq:inter_Rbar} \\[6pt]
+    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \alpha\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E. \label{eq:inter_w}
 \end{align}
 
 The postsynaptic state vector is $\mathbf{x}(t) = \bigl(V,\; y_{\mathrm{post}},\; E,\; r_{\mathrm{post}},\; \bar{R},\; w\bigr) \in \mathbb{R}^6$, and the inputs $\bigl(I_s(t),\; x_{\mathrm{pre}}(t),\; r_{\mathrm{pre}}(t)\bigr)$.
@@ -82,8 +82,8 @@ All remaining variables ($\bar{R}$, $w$) are continuous through $t_{\mathrm{post
     \tau_- \frac{dy_{\mathrm{post}}}{dt} &= -y_{\mathrm{post}} + \rho_{\mathrm{post}}(t), \label{eq:reduced_ypost} \\[6pt]
     \tau_e \frac{dE}{dt} &= -E + \eta_+(w_{\mathrm{max}} - w)\, x_{\mathrm{pre}}\, \rho_{\mathrm{post}}(t) - \eta_-\, w\, y_{\mathrm{post}}\, \rho_{\mathrm{pre}}(t), \label{eq:reduced_E} \\[6pt]
     \tau_r \frac{dr_{\mathrm{post}}}{dt} &= -r_{\mathrm{post}} + \rho_{\mathrm{post}}(t), \label{eq:reduced_rpost} \\[6pt]
-    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \label{eq:reduced_Rbar} \\[6pt]
-    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E, \label{eq:reduced_w}
+    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \alpha\, r_{\mathrm{pre}}\bigr)^2, \label{eq:reduced_Rbar} \\[6pt]
+    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \alpha\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E, \label{eq:reduced_w}
 \end{align}
 
 \newpage
@@ -102,8 +102,8 @@ All remaining variables ($\bar{R}$, $w$) are continuous through $t_{\mathrm{post
     \frac{dy_{\mathrm{post}}}{dt} &= -\frac{y_{\mathrm{post}}}{\tau_-}, \label{eq:ref_ypost} \\[6pt]
     \frac{dE}{dt} &= -\frac{E}{\tau_e}, \label{eq:ref_E} \\[6pt]
     \frac{dr_{\mathrm{post}}}{dt} &= -\frac{r_{\mathrm{post}}}{\tau_r}, \label{eq:ref_rpost} \\[6pt]
-    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2, \label{eq:ref_Rbar} \\[6pt]
-    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \tfrac{1}{2}\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E. \label{eq:ref_w}
+    \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \alpha\, r_{\mathrm{pre}}\bigr)^2, \label{eq:ref_Rbar} \\[6pt]
+    \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \alpha\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E. \label{eq:ref_w}
 \end{align}
 
 \paragraph*{Pre-synaptic spike event at $t_{\mathrm{pre}}^k$:}
@@ -167,7 +167,9 @@ $\tau_e$               & Eligibility trace decay         & 1\,s                 
   \cite{gerstnerEligibilityTracesPlasticity2018,fremauxNeuromodulatedSpikeTimingDependentPlasticity2016} \\[6pt]
 \multicolumn{4}{@{}l}{\textit{Reward baseline}} \\[2pt]
 $\tau_{\bar{R}}$       & Running reward average          & 1--10\,s                &
-  \cite{gerstnerEligibilityTracesPlasticity2018,fremauxNeuromodulatedSpikeTimingDependentPlasticity2016,Sutton1998} \\[6pt]
+  \cite{gerstnerEligibilityTracesPlasticity2018,fremauxNeuromodulatedSpikeTimingDependentPlasticity2016,Sutton1998} \\
+$\alpha$               & Target firing-rate ratio        & 0.5                     &
+  --- \\[6pt]
 \multicolumn{4}{@{}l}{\textit{Plasticity learning rates}} \\[2pt]
 $\eta_+$               & LTP learning rate               & $0.01$                  &
   \cite{Song2000,Morrison2008} \\

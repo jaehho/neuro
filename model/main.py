@@ -2,16 +2,13 @@ from dataclasses import dataclass
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Variable / parameter names match analysis.tex exactly.
-# Each numerical update is tagged with the corresponding equation label
-# from the "Equation Reference" section of analysis.tex (eq:ref_*).
-
 
 @dataclass
 class Params:
     T: float = 20.0
     dt: float = 1e-4
-    seed: int = 0
+    seed: int = 1
+    record_every: float = 1e-4
 
     r_pre_rate: float = 20.0       # Poisson rate of presynaptic input (Hz)
 
@@ -21,31 +18,39 @@ class Params:
     V_reset: float = -70.0         # V_reset
     theta: float = -50.0           # θ    – spike threshold (mV)
     tau_ref: float = 0.003         # τ_ref – absolute refractory period (s)
+    V0: float = -65.0              # initial membrane potential (mV)
+    ref_remaining0: float = 0.0    # initial refractory time remaining (s)
 
     # Synaptic current  (eq:ref_Is)
     tau_s: float = 0.005           # τ_s
     R_m: float = 50.0              # R_m  – membrane resistance (MΩ)
+    I_s0: float = 0.0              # initial synaptic current
 
     # STDP eligibility traces  (eq:ref_xpre, eq:ref_ypost)
     tau_plus: float = 0.02         # τ_+  – pre-synaptic trace decay
     tau_minus: float = 0.02        # τ_-  – post-synaptic trace decay
+    x_pre0: float = 0.0            # initial pre-synaptic STDP trace
+    y_post0: float = 0.0           # initial post-synaptic STDP trace
 
     # Firing-rate filters  (eq:ref_rpre, eq:ref_rpost)
     tau_r: float = 0.5             # τ_r
+    r_pre0: float = 0.0            # initial pre-synaptic firing-rate filter
+    r_post0: float = 0.0           # initial post-synaptic firing-rate filter
 
     # Eligibility trace  (eq:ref_E)
     tau_e: float = 0.5             # τ_e
+    E0: float = 0.0                # initial eligibility trace
 
     # Reward baseline  (eq:ref_Rbar)
     tau_Rbar: float = 5.0          # τ_R̄
+    R_bar0: float = 0.0            # initial reward baseline
+    alpha: float = 0.5             # α   – target r_post / r_pre ratio
 
     # Plasticity  (eq:ref_pre_E, eq:ref_post_E, eq:ref_w)
     w0: float = 2.0                # initial weight
     wmax: float = 10.0             # w_max
     eta_plus: float = 1e-4         # η_+  – LTP rate
     eta_minus: float = 1e-4        # η_-  – LTD rate
-
-    record_every: float = 0.001
 
 
 def simulate(p: Params):
@@ -57,19 +62,19 @@ def simulate(p: Params):
     # ------------------------------------------------------------------ #
 
     # Membrane
-    V = p.E_L
-    ref_remaining = 0.0
+    V = p.V0
+    ref_remaining = p.ref_remaining0
 
     # Input subsystem (Sec. 1 / eq:ref_Is, eq:ref_xpre, eq:ref_rpre)
-    I_s   = 0.0
-    x_pre = 0.0
-    r_pre = 0.0
+    I_s   = p.I_s0
+    x_pre = p.x_pre0
+    r_pre = p.r_pre0
 
     # Postsynaptic subsystem (Sec. 1 / eq:ref_ypost..eq:ref_w)
-    y_post = 0.0
-    r_post = 0.0
-    E      = 0.0
-    R_bar  = 0.0
+    y_post = p.y_post0
+    r_post = p.r_post0
+    E      = p.E0
+    R_bar  = p.R_bar0
     w      = p.w0
 
     rec_step = max(1, int(p.record_every / p.dt))
@@ -142,7 +147,7 @@ def simulate(p: Params):
         r_post += p.dt * (-r_post / p.tau_r)      # eq:ref_rpost
         E      += p.dt * (-E      / p.tau_e)      # eq:ref_E
 
-        R     = -(r_post - 0.25 * r_pre) ** 2                       # instantaneous reward
+        R     = -(r_post - p.alpha * r_pre) ** 2                    # instantaneous reward
         R_bar += (p.dt / p.tau_Rbar) * (-R_bar + R)                # eq:ref_Rbar
         M     = R - R_bar                                           # neuromodulator: R - R̄
         w    += p.dt * M * E                                        # eq:ref_w
@@ -240,7 +245,7 @@ def plot_all_in_one_figure(rec, p):
     if PANELS["rates"]:
         axs[i].plot(t, rec["r_pre"], label="r_pre")
         axs[i].plot(t, rec["r_post"], label="r_post")
-        axs[i].plot(t, 0.25 * rec["r_pre"], linestyle="--", label="target (½ r_pre)")
+        axs[i].plot(t, p.alpha * rec["r_pre"], linestyle="--", label="target (α·r_pre)")
         axs[i].legend(loc="upper right")
         axs[i].set_ylabel("Hz")
         axs[i].set_title("Firing rates (exponential filter, τ_r)")
@@ -273,43 +278,7 @@ def plot_all_in_one_figure(rec, p):
 
 
 if __name__ == "__main__":
-    p = Params(
-        T=20.0,
-        dt=1e-4,
-        record_every=1e-4,
-        seed=1,
-
-        r_pre_rate=20.0,
-
-        tau_m=0.02,
-        E_L=-65.0,
-        V_reset=-70.0,
-        theta=-50.0,
-        tau_ref=0.003,
-
-        tau_s=0.005,
-
-        R_m=50.0,
-
-        tau_plus=0.02,
-        tau_minus=0.02,
-
-        tau_r=0.5,
-        tau_e=0.5,
-
-        tau_Rbar=5.0,
-
-        w0=2.0,
-        wmax=10.0,
-        eta_plus=1e-4,
-        eta_minus=1e-4,
-        # TODO: add all initial conditions
-        # oom handling
-        # play with initial conditions and parameters to see different regimes of behavior
-        # how sensitive is the model to parameters?
-        # how to measure convergence: spectrum analysis? transient analysis?
-        # try different target regimes, nonlinear?
-    )
+    p = Params()
 
     rec = simulate(p)
     plot_all_in_one_figure(rec, p)
