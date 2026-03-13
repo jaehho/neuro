@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import json
 from dataclasses import asdict, dataclass
+from typing import Annotated
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 import matplotlib.pyplot as plt
 import numpy as np
+import typer
 
 try:
     import h5py
@@ -956,7 +957,7 @@ def write_plotly_html(fig, output_html: str) -> str:
 
 def plot_all_in_one_figure_matplotlib(rec, p: Params):
     t = rec["t"]
-    fig, axs = plt.subplots(7, 1, figsize=(19, 10), sharex=True)
+    fig, axs = plt.subplots(12, 1, figsize=(19, 20), sharex=True)
 
     axs[0].eventplot([rec["pre_spike_times"], rec["post_spike_times"]], lineoffsets=[1, 0], linelengths=0.8)
     axs[0].set_yticks([0, 1])
@@ -972,27 +973,35 @@ def plot_all_in_one_figure_matplotlib(rec, p: Params):
     axs[2].plot(t, rec["I_s"])
     axs[2].set_title("Synaptic current I_s(t)")
 
-    axs[3].plot(t, rec["x_pre"], label="x_pre")
-    axs[3].plot(t, rec["y_post"], label="y_post")
-    axs[3].legend(loc="upper right")
-    axs[3].set_title("STDP traces")
+    axs[3].plot(t, rec["x_pre"])
+    axs[3].set_title("STDP pre-trace x_pre(t)")
 
-    axs[4].plot(t, rec["E"])
-    axs[4].set_title("Eligibility trace E(t)")
+    axs[4].plot(t, rec["y_post"])
+    axs[4].set_title("STDP post-trace y_post(t)")
 
-    axs[5].plot(t, rec["r_pre"], label="r_pre")
-    axs[5].plot(t, rec["r_post"], label="r_post")
-    axs[5].plot(t, p.alpha * rec["r_pre"], linestyle="--", label="target")
-    axs[5].legend(loc="upper right")
-    axs[5].set_title("Firing rates")
+    axs[5].plot(t, rec["E"])
+    axs[5].set_title("Eligibility trace E(t)")
 
-    axs[6].plot(t, rec["R"], label="R")
-    axs[6].plot(t, rec["R_bar"], label="R_bar")
-    axs[6].plot(t, rec["M"], label="M")
-    axs[6].plot(t, rec["w"], label="w")
-    axs[6].legend(loc="upper right")
-    axs[6].set_title("Reward and weight")
-    axs[6].set_xlabel("time (s)")
+    axs[6].plot(t, rec["r_pre"])
+    axs[6].set_title("Pre-synaptic firing rate r_pre(t)")
+
+    axs[7].plot(t, rec["r_post"])
+    axs[7].plot(t, p.alpha * rec["r_pre"], linestyle="--", label="target")
+    axs[7].legend(loc="upper right")
+    axs[7].set_title("Post-synaptic firing rate r_post(t)")
+
+    axs[8].plot(t, rec["R"])
+    axs[8].set_title("Reward R(t)")
+
+    axs[9].plot(t, rec["R_bar"])
+    axs[9].set_title("Reward baseline R_bar(t)")
+
+    axs[10].plot(t, rec["M"])
+    axs[10].set_title("Modulation M(t)")
+
+    axs[11].plot(t, rec["w"])
+    axs[11].set_title("Synaptic weight w(t)")
+    axs[11].set_xlabel("time (s)")
 
     plt.tight_layout()
     plt.savefig("simulation.png")
@@ -1015,18 +1024,23 @@ def build_all_in_one_plotly_figure(
     t = arrays["t"]
 
     fig = make_subplots(
-        rows=7,
+        rows=12,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.03,
+        vertical_spacing=0.02,
         subplot_titles=(
             "Spike times",
-            "Membrane potential",
-            "Synaptic current",
-            "STDP traces",
-            "Eligibility trace",
-            "Firing rates",
-            "Reward and weight",
+            "Membrane potential V",
+            "Synaptic current I_s",
+            "STDP pre-trace x_pre",
+            "STDP post-trace y_post",
+            "Eligibility trace E",
+            "Pre-synaptic firing rate r_pre",
+            "Post-synaptic firing rate r_post",
+            "Reward R",
+            "Reward baseline R_bar",
+            "Modulation M",
+            "Synaptic weight w",
         ),
     )
 
@@ -1057,20 +1071,20 @@ def build_all_in_one_plotly_figure(
     fig.add_hline(y=p.V_reset, line_dash="dot", row=2, col=1)
     fig.add_trace(go.Scattergl(x=t, y=arrays["I_s"], name="I_s"), row=3, col=1)
     fig.add_trace(go.Scattergl(x=t, y=arrays["x_pre"], name="x_pre"), row=4, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["y_post"], name="y_post"), row=4, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["E"], name="E"), row=5, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["r_pre"], name="r_pre"), row=6, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["r_post"], name="r_post"), row=6, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=_plotly_values(p.alpha * np.asarray(frame["r_pre"].to_numpy())), name="target"), row=6, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["R"], name="R"), row=7, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["R_bar"], name="R_bar"), row=7, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["M"], name="M"), row=7, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["w"], name="w"), row=7, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["y_post"], name="y_post"), row=5, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["E"], name="E"), row=6, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["r_pre"], name="r_pre"), row=7, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["r_post"], name="r_post"), row=8, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=_plotly_values(p.alpha * np.asarray(frame["r_pre"].to_numpy())), name="target"), row=8, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["R"], name="R"), row=9, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["R_bar"], name="R_bar"), row=10, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["M"], name="M"), row=11, col=1)
+    fig.add_trace(go.Scattergl(x=t, y=arrays["w"], name="w"), row=12, col=1)
 
-    fig.update_layout(height=1600, width=1400, title="Neuromodulated STDP simulation", showlegend=True)
-    fig.update_xaxes(title_text="time (s)", row=7, col=1)
+    fig.update_layout(height=2400, width=1400, title="Neuromodulated STDP simulation", showlegend=True)
+    fig.update_xaxes(title_text="time (s)", row=12, col=1)
     if x0 is not None and x1 is not None:
-        fig.update_xaxes(range=[x0, x1], row=7, col=1)
+        fig.update_xaxes(range=[x0, x1], row=12, col=1)
     return fig
 
 
@@ -1128,10 +1142,10 @@ def serve_zoom_adaptive_plot(source_path: str | Path, p: Params, host: str = "12
       if ("xaxis.range[0]" in eventData && "xaxis.range[1]" in eventData) {{
         return [Number(eventData["xaxis.range[0]"]), Number(eventData["xaxis.range[1]"])];
       }}
-      if ("xaxis7.range[0]" in eventData && "xaxis7.range[1]" in eventData) {{
-        return [Number(eventData["xaxis7.range[0]"]), Number(eventData["xaxis7.range[1]"])];
+      if ("xaxis12.range[0]" in eventData && "xaxis12.range[1]" in eventData) {{
+        return [Number(eventData["xaxis12.range[0]"]), Number(eventData["xaxis12.range[1]"])];
       }}
-      if ("xaxis.autorange" in eventData || "xaxis7.autorange" in eventData) {{
+      if ("xaxis.autorange" in eventData || "xaxis12.autorange" in eventData) {{
         return null;
       }}
       return undefined;
@@ -1242,44 +1256,48 @@ def serve_zoom_adaptive_plot(source_path: str | Path, p: Params, host: str = "12
         server.server_close()
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Simulate neuromodulated STDP with optional HDF5 and Parquet output.")
-    parser.add_argument("--hdf5", type=str, default=None, help="Write recorded state to an HDF5 file.")
-    parser.add_argument("--parquet", type=str, default=None, help="Write recorded state to a streamed Parquet file.")
-    parser.add_argument("--plot-backend", choices=["matplotlib", "plotly", "server"], default="plotly")
-    parser.add_argument("--plot-html", type=str, default="simulation.html")
-    parser.add_argument("--chunk-rows", type=int, default=100_000)
-    parser.add_argument("--max-plot-points", type=int, default=40_000)
-    parser.add_argument("--host", type=str, default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8050)
-    parser.add_argument("--method", choices=["euler", "rk4"], default="euler", help="Integrator for smooth dynamics.")
-    parser.add_argument("--reuse-existing", action="store_true", help="For the server backend, reuse an existing HDF5/Parquet file instead of rerunning the simulation.")
-    return parser.parse_args()
+app = typer.Typer(help="Simulate neuromodulated STDP with optional HDF5 and Parquet output.")
 
 
-if __name__ == "__main__":
-    args = parse_args()
+@app.command()
+def main(
+    hdf5: Annotated[str | None, typer.Option(help="Write recorded state to an HDF5 file.")] = None,
+    parquet: Annotated[str | None, typer.Option(help="Write recorded state to a streamed Parquet file.")] = "sim.parquet",
+    plot_backend: Annotated[str, typer.Option(help="Plot backend to use.")] = "server",
+    plot_html: Annotated[str, typer.Option(help="Output HTML file for plotly backend.")] = "simulation.html",
+    chunk_rows: Annotated[int, typer.Option(help="Row chunk size for streaming output.")] = 100_000,
+    max_plot_points: Annotated[int, typer.Option(help="Max data points for plotting.")] = 40_000,
+    host: Annotated[str, typer.Option(help="Host for server backend.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port for server backend.")] = 8050,
+    method: Annotated[str, typer.Option(help="Integrator for smooth dynamics.")] = "euler",
+    reuse_existing: Annotated[bool, typer.Option(help="Reuse an existing HDF5/Parquet file instead of rerunning the simulation.")] = False,
+):
+    if plot_backend not in {"matplotlib", "plotly", "server"}:
+        raise typer.BadParameter(f"plot-backend must be one of: matplotlib, plotly, server (got {plot_backend!r})")
+    if method not in {"euler", "rk4"}:
+        raise typer.BadParameter(f"method must be one of: euler, rk4 (got {method!r})")
+
     # params = Params(T=2000, method="rk4")
     params = Params(
-    T=100,
-    method="rk4",
-    V0=-62.39967779660166,
-    I_s0=4.5401991625251883e-05,
-    x_pre0=0.08942548983512577,
-    y_post0=0.008716035584680641,
-    E0=0.0030283801939102665,
-    r_pre0=9.508331944774904,
-    r_post0=4.562177684144224,
-    R_bar0=-0.08942311829959347,
-    w0=1.8925826247554693,
+        T=100,
+        method="rk4",
+        V0=-62.39967779660166,
+        I_s0=4.5401991625251883e-05,
+        x_pre0=0.08942548983512577,
+        y_post0=0.008716035584680641,
+        E0=0.0030283801939102665,
+        r_pre0=9.508331944774904,
+        r_post0=4.562177684144224,
+        R_bar0=-0.08942311829959347,
+        w0=1.8925826247554693,
     )
 
-    if args.plot_backend == "server" and not (args.parquet or args.hdf5):
-        raise ValueError("The server backend requires `--parquet` or `--hdf5` so zoom requests can be resampled from disk.")
+    if plot_backend == "server" and not (parquet or hdf5):
+        raise typer.BadParameter("The server backend requires --parquet or --hdf5 so zoom requests can be resampled from disk.")
 
     existing_server_source = None
-    if args.plot_backend == "server" and args.reuse_existing:
-        for candidate in (args.parquet, args.hdf5):
+    if plot_backend == "server" and reuse_existing:
+        for candidate in (parquet, hdf5):
             if candidate and Path(candidate).exists():
                 existing_server_source = candidate
                 break
@@ -1288,31 +1306,35 @@ if __name__ == "__main__":
     if existing_server_source is None:
         rec = simulate(
             params,
-            hdf5_path=args.hdf5,
-            parquet_path=args.parquet,
-            chunk_rows=args.chunk_rows,
+            hdf5_path=hdf5,
+            parquet_path=parquet,
+            chunk_rows=chunk_rows,
         )
 
-    if args.plot_backend == "matplotlib":
+    if plot_backend == "matplotlib":
         if isinstance(rec, dict) and "t" in rec:
             plot_all_in_one_figure_matplotlib(rec, params)
         else:
-            raise ValueError("Matplotlib plotting requires in-memory records. Use Plotly for HDF5/Parquet-backed runs.")
-    elif args.plot_backend == "server":
-        plot_source = existing_server_source or args.parquet or args.hdf5
+            raise typer.BadParameter("Matplotlib plotting requires in-memory records. Use Plotly for HDF5/Parquet-backed runs.")
+    elif plot_backend == "server":
+        plot_source = existing_server_source or parquet or hdf5
         serve_zoom_adaptive_plot(
             plot_source,
             params,
-            host=args.host,
-            port=args.port,
-            max_points=args.max_plot_points,
+            host=host,
+            port=port,
+            max_points=max_plot_points,
         )
     else:
-        plot_source = args.parquet or args.hdf5 or rec
+        plot_source = parquet or hdf5 or rec
         output_html = plot_all_in_one_plotly(
             plot_source,
             params,
-            output_html=args.plot_html,
-            max_points=args.max_plot_points,
+            output_html=plot_html,
+            max_points=max_plot_points,
         )
         print(f"Wrote interactive plot to {output_html}")
+
+
+if __name__ == "__main__":
+    app()
