@@ -58,6 +58,16 @@ SERIES_KEYS = [
 
 SPIKE_KEYS = ["pre_spike_times", "post_spike_times"]
 
+V_IDX = 0
+I_S_IDX = 1
+X_PRE_IDX = 2
+Y_POST_IDX = 3
+E_IDX = 4
+R_PRE_IDX = 5
+R_POST_IDX = 6
+RBAR_IDX = 7
+W_IDX = 8
+
 
 @dataclass
 class Params:
@@ -65,6 +75,7 @@ class Params:
     dt: float = 1e-4
     seed: int = 1
     record_every: float = 1e-4
+    method: str = "euler"
 
     r_pre_rate: float = 20.0
 
@@ -337,26 +348,147 @@ def _build_recorder(
     return MultiRecorder(recorders)
 
 
+def _reward_terms(r_pre: float, r_post: float, R_bar: float, alpha: float) -> tuple[float, float]:
+    R = -(r_post - alpha * r_pre) ** 2
+    M = R - R_bar
+    return R, M
+
+
+def _pack_state(
+    V: float,
+    I_s: float,
+    x_pre: float,
+    y_post: float,
+    E: float,
+    r_pre: float,
+    r_post: float,
+    R_bar: float,
+    w: float,
+) -> np.ndarray:
+    return np.array([V, I_s, x_pre, y_post, E, r_pre, r_post, R_bar, w], dtype=np.float64)
+
+
+def _smooth_rhs(y: np.ndarray, p: Params, *, voltage_active: bool) -> np.ndarray:
+    rhs = np.zeros_like(y)
+
+    V = float(y[V_IDX])
+    I_s = float(y[I_S_IDX])
+    x_pre = float(y[X_PRE_IDX])
+    y_post = float(y[Y_POST_IDX])
+    E = float(y[E_IDX])
+    r_pre = float(y[R_PRE_IDX])
+    r_post = float(y[R_POST_IDX])
+    R_bar = float(y[RBAR_IDX])
+    w = float(np.clip(y[W_IDX], 0.0, p.wmax))
+
+    R, M = _reward_terms(r_pre, r_post, R_bar, p.alpha)
+
+    if voltage_active:
+        rhs[V_IDX] = (-(V - p.E_L) + p.R_m * w * I_s) / p.tau_m
+
+    rhs[I_S_IDX] = -I_s / p.tau_s
+    rhs[X_PRE_IDX] = -x_pre / p.tau_plus
+    rhs[Y_POST_IDX] = -y_post / p.tau_minus
+    rhs[E_IDX] = -E / p.tau_e
+    rhs[R_PRE_IDX] = -r_pre / p.tau_r
+    rhs[R_POST_IDX] = -r_post / p.tau_r
+    rhs[RBAR_IDX] = (-R_bar + R) / p.tau_Rbar
+    rhs[W_IDX] = M * E
+
+    return rhs
+
+
+def _advance_state(
+    y: np.ndarray,
+    dt: float,
+    p: Params,
+    *,
+    method: str,
+    voltage_active: bool,
+) -> np.ndarray:
+    if dt <= 0.0:
+        out = y.copy()
+    elif method == "euler":
+        out = y + dt * _smooth_rhs(y, p, voltage_active=voltage_active)
+    elif method == "rk4":
+        k1 = _smooth_rhs(y, p, voltage_active=voltage_active)
+        k2 = _smooth_rhs(y + 0.5 * dt * k1, p, voltage_active=voltage_active)
+        k3 = _smooth_rhs(y + 0.5 * dt * k2, p, voltage_active=voltage_active)
+        k4 = _smooth_rhs(y + dt * k3, p, voltage_active=voltage_active)
+        out = y + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+    else:
+        raise ValueError(f"Unknown integration method: {method!r}")
+
+    out[W_IDX] = float(np.clip(out[W_IDX], 0.0, p.wmax))
+    if not voltage_active:
+        out[V_IDX] = p.V_reset
+    return out
+
+
+def _crossing_fraction(v0: float, v1: float, threshold: float) -> float | None:
+    if v0 >= threshold or v1 < threshold:
+        return None
+    dv = v1 - v0
+    if dv <= 0.0:
+        return 1.0
+    return float(np.clip((threshold - v0) / dv, 0.0, 1.0))
+
+
+def _row_from_state(
+    t: float,
+    y: np.ndarray,
+    p: Params,
+    *,
+    pre_spike: int,
+    post_spike: int,
+    is_refractory: int,
+) -> dict[str, float]:
+    R, M = _reward_terms(float(y[R_PRE_IDX]), float(y[R_POST_IDX]), float(y[RBAR_IDX]), p.alpha)
+    return {
+        "t": t,
+        "V": float(y[V_IDX]),
+        "w": float(y[W_IDX]),
+        "I_s": float(y[I_S_IDX]),
+        "x_pre": float(y[X_PRE_IDX]),
+        "y_post": float(y[Y_POST_IDX]),
+        "E": float(y[E_IDX]),
+        "r_pre": float(y[R_PRE_IDX]),
+        "r_post": float(y[R_POST_IDX]),
+        "R": float(R),
+        "R_bar": float(y[RBAR_IDX]),
+        "M": float(M),
+        "pre_spike_bin": int(pre_spike),
+        "post_spike_bin": int(post_spike),
+        "is_refractory": int(is_refractory),
+    }
+
+
 def simulate(
     p: Params,
     hdf5_path: str | None = None,
     parquet_path: str | None = None,
     chunk_rows: int = 100_000,
 ):
+    method = p.method.lower()
+    if method not in {"euler", "rk4"}:
+        raise ValueError("Params.method must be either 'euler' or 'rk4'.")
+
     n = int(p.T / p.dt)
     period_steps = max(1, round(1.0 / (p.r_pre_rate * p.dt)))
     rec_step = max(1, int(p.record_every / p.dt))
 
-    V = p.V0
+    y = _pack_state(
+        p.V0,
+        p.I_s0,
+        p.x_pre0,
+        p.y_post0,
+        p.E0,
+        p.r_pre0,
+        p.r_post0,
+        p.R_bar0,
+        p.w0,
+    )
     ref_remaining = p.ref_remaining0
-    I_s = p.I_s0
-    x_pre = p.x_pre0
-    r_pre = p.r_pre0
-    y_post = p.y_post0
-    r_post = p.r_post0
-    E = p.E0
-    R_bar = p.R_bar0
-    w = p.w0
 
     recorder = _build_recorder(p, hdf5_path=hdf5_path, parquet_path=parquet_path, chunk_rows=chunk_rows)
 
@@ -366,66 +498,100 @@ def simulate(
         pre_spike = 1 if (step % period_steps == 0) else 0
         if pre_spike:
             recorder.append_spike("pre_spike_times", t)
-            I_s += 1.0
-            x_pre += 1.0
-            r_pre += 1.0
-            E -= p.eta_minus * w * y_post
-
-        I_s += p.dt * (-I_s / p.tau_s)
-        x_pre += p.dt * (-x_pre / p.tau_plus)
-        r_pre += p.dt * (-r_pre / p.tau_r)
+            y[I_S_IDX] += 1.0
+            y[X_PRE_IDX] += 1.0
+            y[R_PRE_IDX] += 1.0
+            y[E_IDX] -= p.eta_minus * y[W_IDX] * y[Y_POST_IDX]
 
         post_spike = 0
         is_refractory = 1 if ref_remaining > 0.0 else 0
 
-        if ref_remaining <= 0.0:
-            dV = (p.dt / p.tau_m) * (-(V - p.E_L) + p.R_m * w * I_s)
-            V_new = V + dV
-            if V < p.theta and V_new >= p.theta:
-                post_spike = 1
-                recorder.append_spike("post_spike_times", t)
-                V = p.V_reset
-                ref_remaining = p.tau_ref
+        if method == "euler":
+            V = float(y[V_IDX])
+            I_s = float(y[I_S_IDX])
+            x_pre = float(y[X_PRE_IDX])
+            y_post = float(y[Y_POST_IDX])
+            E = float(y[E_IDX])
+            r_pre = float(y[R_PRE_IDX])
+            r_post = float(y[R_POST_IDX])
+            R_bar = float(y[RBAR_IDX])
+            w = float(y[W_IDX])
+
+            I_s += p.dt * (-I_s / p.tau_s)
+            x_pre += p.dt * (-x_pre / p.tau_plus)
+            r_pre += p.dt * (-r_pre / p.tau_r)
+
+            if ref_remaining <= 0.0:
+                dV = (p.dt / p.tau_m) * (-(V - p.E_L) + p.R_m * w * I_s)
+                V_new = V + dV
+                if V < p.theta and V_new >= p.theta:
+                    post_spike = 1
+                    recorder.append_spike("post_spike_times", t)
+                    V = p.V_reset
+                    ref_remaining = p.tau_ref
+                else:
+                    V = V_new
             else:
-                V = V_new
+                ref_remaining = max(0.0, ref_remaining - p.dt)
+                V = p.V_reset
+
+            if post_spike:
+                y_post += 1.0
+                r_post += 1.0
+                E += p.eta_plus * (p.wmax - w) * x_pre
+
+            y_post += p.dt * (-y_post / p.tau_minus)
+            r_post += p.dt * (-r_post / p.tau_r)
+            E += p.dt * (-E / p.tau_e)
+
+            R, _ = _reward_terms(r_pre, r_post, R_bar, p.alpha)
+            R_bar += (p.dt / p.tau_Rbar) * (-R_bar + R)
+            _, M = _reward_terms(r_pre, r_post, R_bar, p.alpha)
+            w += p.dt * M * E
+            w = min(p.wmax, max(0.0, w))
+
+            y = _pack_state(V, I_s, x_pre, y_post, E, r_pre, r_post, R_bar, w)
+
         else:
-            ref_remaining -= p.dt
-            V = p.V_reset
+            if ref_remaining <= 0.0:
+                v0 = float(y[V_IDX])
+                y_trial = _advance_state(y, p.dt, p, method="rk4", voltage_active=True)
+                frac = _crossing_fraction(v0, float(y_trial[V_IDX]), p.theta)
 
-        if post_spike:
-            y_post += 1.0
-            r_post += 1.0
-            E += p.eta_plus * (p.wmax - w) * x_pre
+                if frac is None:
+                    y = y_trial
+                else:
+                    dt1 = frac * p.dt
+                    dt2 = p.dt - dt1
 
-        y_post += p.dt * (-y_post / p.tau_minus)
-        r_post += p.dt * (-r_post / p.tau_r)
-        E += p.dt * (-E / p.tau_e)
+                    y_mid = _advance_state(y, dt1, p, method="rk4", voltage_active=True)
+                    spike_t = t + dt1
+                    recorder.append_spike("post_spike_times", spike_t)
+                    post_spike = 1
 
-        R = -(r_post - p.alpha * r_pre) ** 2
-        R_bar += (p.dt / p.tau_Rbar) * (-R_bar + R)
-        M = R - R_bar
-        w += p.dt * M * E
-        w = min(p.wmax, max(0.0, w))
+                    y_mid[V_IDX] = p.V_reset
+                    y_mid[Y_POST_IDX] += 1.0
+                    y_mid[R_POST_IDX] += 1.0
+                    y_mid[E_IDX] += p.eta_plus * (p.wmax - y_mid[W_IDX]) * y_mid[X_PRE_IDX]
+
+                    y = _advance_state(y_mid, dt2, p, method="rk4", voltage_active=False)
+                    y[V_IDX] = p.V_reset
+                    ref_remaining = max(0.0, p.tau_ref - dt2)
+            else:
+                y = _advance_state(y, p.dt, p, method="rk4", voltage_active=False)
+                y[V_IDX] = p.V_reset
+                ref_remaining = max(0.0, ref_remaining - p.dt)
 
         if step % rec_step == 0:
             recorder.append(
-                {
-                    "t": t,
-                    "V": V,
-                    "w": w,
-                    "I_s": I_s,
-                    "x_pre": x_pre,
-                    "y_post": y_post,
-                    "E": E,
-                    "r_pre": r_pre,
-                    "r_post": r_post,
-                    "R": R,
-                    "R_bar": R_bar,
-                    "M": M,
-                    "pre_spike_bin": pre_spike,
-                    "post_spike_bin": post_spike,
-                    "is_refractory": is_refractory,
-                }
+                _row_from_state(
+                    t,
+                    y,
+                    p,
+                    pre_spike=pre_spike,
+                    post_spike=post_spike,
+                    is_refractory=is_refractory,
+                )
             )
 
     return recorder.finalize()
@@ -1086,13 +1252,27 @@ def parse_args():
     parser.add_argument("--max-plot-points", type=int, default=40_000)
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8050)
+    parser.add_argument("--method", choices=["euler", "rk4"], default="euler", help="Integrator for smooth dynamics.")
     parser.add_argument("--reuse-existing", action="store_true", help="For the server backend, reuse an existing HDF5/Parquet file instead of rerunning the simulation.")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    params = Params(T=2000)
+    # params = Params(T=2000, method="rk4")
+    params = Params(
+    T=100,
+    method="rk4",
+    V0=-62.39967779660166,
+    I_s0=4.5401991625251883e-05,
+    x_pre0=0.08942548983512577,
+    y_post0=0.008716035584680641,
+    E0=0.0030283801939102665,
+    r_pre0=9.508331944774904,
+    r_post0=4.562177684144224,
+    R_bar0=-0.08942311829959347,
+    w0=1.8925826247554693,
+    )
 
     if args.plot_backend == "server" and not (args.parquet or args.hdf5):
         raise ValueError("The server backend requires `--parquet` or `--hdf5` so zoom requests can be resampled from disk.")
