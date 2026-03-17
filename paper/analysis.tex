@@ -10,7 +10,7 @@
 \usepackage{array}
 \usepackage{ragged2e}
 \usepackage[colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue]{hyperref}
-\usepackage[style=apa,natbib=true]{biblatex} 
+\usepackage[style=apa,natbib=true]{biblatex}
 \addbibresource{references.bib} 
 
 \geometry{a4paper, margin=1in}
@@ -85,6 +85,36 @@ All remaining variables ($\bar{R}$, $w$) are continuous through $t_{\mathrm{post
     \tau_{\bar{R}} \frac{d\bar{R}}{dt} &= -\bar{R} - \bigl(r_{\mathrm{post}} - \alpha\, r_{\mathrm{pre}}\bigr)^2, \label{eq:reduced_Rbar} \\[6pt]
     \frac{dw}{dt} &= \Bigl[-\bigl(r_{\mathrm{post}} - \alpha\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}\Bigr]\, E, \label{eq:reduced_w}
 \end{align}
+
+\section{Timescale Separation and Relaxation Oscillations} \label{sec:oscillations}
+
+The reward baseline $\bar{R}$ and synaptic weight $w$ evolve on timescales much slower than the remaining state variables. The baseline has $\tau_{\bar{R}} = 5$\,s, which is $250\times$ slower than the membrane time constant $\tau_m = 20$\,ms. The weight $w$ evolves according to $\dot{w} = M \cdot E$, where both the modulation signal $M = R - \bar{R}$ and the eligibility trace $E$ (scaled by learning rates $\eta_\pm \sim 10^{-4}$) are small in magnitude, yielding an effective timescale for $w$ that is comparable to or slower than $\tau_{\bar{R}}$.
+
+\subsection{Spike-count quantization}
+
+The postsynaptic neuron fires a discrete number of spikes $N(w)$ per presynaptic inter-spike interval $\Delta t_{\mathrm{pre}} = 1/r_{\mathrm{pre}}$. For a given weight $w$, the peak membrane drive is $R_m\, w\, I_s$, and the number of threshold crossings within each input cycle is a piecewise-constant, right-continuous function of $w$:
+\[
+    N(w) = \#\bigl\{t \in [t_{\mathrm{pre}}^k,\; t_{\mathrm{pre}}^{k+1}) : V(t) \uparrow \theta \bigr\}.
+\]
+At critical weights $w_c^{(n)}$ where $N$ increments from $n$ to $n+1$, the smoothed firing-rate trace $r_{\mathrm{post}}$ undergoes a step change of approximately $1/\tau_r$, and consequently the reward $R = -(r_{\mathrm{post}} - \alpha\, r_{\mathrm{pre}})^2$ experiences a discontinuous shift.
+
+\subsection{Mechanism of the limit cycle}
+
+Near a critical weight $w_c^{(n)}$, the system exhibits a relaxation oscillation with the following phases:
+
+\paragraph{Slow recovery.} With $w < w_c^{(n)}$, the neuron fires $N = n$ spikes per input cycle. The reward $R$ and baseline $\bar{R}$ are approximately matched, so $M \approx 0$ and $\dot{w} \approx 0$. However, small residual $M > 0$ (since $\bar{R}$ lags $R$) causes $w$ to drift upward on the timescale $\mathcal{O}(\tau_{\bar{R}} / (\eta\, |E|))$.
+
+\paragraph{Threshold crossing.} When $w$ crosses $w_c^{(n)}$, an additional postsynaptic spike fires. The discrete increment $r_{\mathrm{post}} \leftarrow r_{\mathrm{post}} + 1$ causes $R$ to jump sharply negative. Since $\bar{R}$ has not yet tracked this change ($\tau_{\bar{R}}$ is large), the modulation signal
+\[
+    M = R - \bar{R} = -\bigl(r_{\mathrm{post}} - \alpha\, r_{\mathrm{pre}}\bigr)^2 - \bar{R}
+\]
+becomes strongly negative. Combined with a nonzero eligibility trace $E$, this drives $\dot{w} = M \cdot E \ll 0$, rapidly decreasing $w$.
+
+\paragraph{Subcritical reset.} With $w$ pushed below $w_c^{(n)}$, the extra spike no longer fires and $N$ returns to $n$. The reward $R$ recovers, and $\bar{R}$ begins to track back toward the (less negative) steady-state $R$. Both $\bar{R}$ and $w$ slowly recover, and the cycle repeats.
+
+\subsection{Non-convergence}
+
+The system cannot reach a stable fixed point at $w = w_c^{(n)}$ because the postsynaptic firing rate $r_{\mathrm{post}}(w)$ is discontinuous in $w$ at the critical values $w_c^{(n)}$, while the learning rule $\dot{w} = M \cdot E$ is continuous. The weight is attracted toward $w_c^{(n)}$ from below (where $M > 0$ drives $w$ up) and repelled from above (where the extra spike makes $M \ll 0$ and drives $w$ down). This constitutes a \emph{grazing bifurcation}: the smooth flow interacts with a discontinuous reset map at the spike threshold, generically producing a stable limit cycle rather than a fixed point.
 
 \newpage
 \section*{Equation Reference}

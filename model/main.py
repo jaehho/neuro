@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from dataclasses import asdict, dataclass
 from typing import Annotated
 from http import HTTPStatus
@@ -107,6 +108,9 @@ class Params:
     tau_Rbar: float = 5.0
     R_bar0: float = 0.0
     alpha: float = 0.5
+
+    rate_mode: str = "exp"
+    rate_window: float = 0.5
 
     w0: float = 2.0
     wmax: float = 10.0
@@ -369,7 +373,14 @@ def _pack_state(
     return np.array([V, I_s, x_pre, y_post, E, r_pre, r_post, R_bar, w], dtype=np.float64)
 
 
-def _smooth_rhs(y: np.ndarray, p: Params, *, voltage_active: bool) -> np.ndarray:
+def _smooth_rhs(
+    y: np.ndarray,
+    p: Params,
+    *,
+    voltage_active: bool,
+    rate_pre: float | None = None,
+    rate_post: float | None = None,
+) -> np.ndarray:
     rhs = np.zeros_like(y)
 
     V = float(y[V_IDX])
@@ -382,7 +393,9 @@ def _smooth_rhs(y: np.ndarray, p: Params, *, voltage_active: bool) -> np.ndarray
     R_bar = float(y[RBAR_IDX])
     w = float(np.clip(y[W_IDX], 0.0, p.wmax))
 
-    R, M = _reward_terms(r_pre, r_post, R_bar, p.alpha)
+    rr_pre = rate_pre if rate_pre is not None else r_pre
+    rr_post = rate_post if rate_post is not None else r_post
+    R, M = _reward_terms(rr_pre, rr_post, R_bar, p.alpha)
 
     if voltage_active:
         rhs[V_IDX] = (-(V - p.E_L) + p.R_m * w * I_s) / p.tau_m
@@ -406,16 +419,19 @@ def _advance_state(
     *,
     method: str,
     voltage_active: bool,
+    rate_pre: float | None = None,
+    rate_post: float | None = None,
 ) -> np.ndarray:
+    rk = dict(voltage_active=voltage_active, rate_pre=rate_pre, rate_post=rate_post)
     if dt <= 0.0:
         out = y.copy()
     elif method == "euler":
-        out = y + dt * _smooth_rhs(y, p, voltage_active=voltage_active)
+        out = y + dt * _smooth_rhs(y, p, **rk)
     elif method == "rk4":
-        k1 = _smooth_rhs(y, p, voltage_active=voltage_active)
-        k2 = _smooth_rhs(y + 0.5 * dt * k1, p, voltage_active=voltage_active)
-        k3 = _smooth_rhs(y + 0.5 * dt * k2, p, voltage_active=voltage_active)
-        k4 = _smooth_rhs(y + dt * k3, p, voltage_active=voltage_active)
+        k1 = _smooth_rhs(y, p, **rk)
+        k2 = _smooth_rhs(y + 0.5 * dt * k1, p, **rk)
+        k3 = _smooth_rhs(y + 0.5 * dt * k2, p, **rk)
+        k4 = _smooth_rhs(y + dt * k3, p, **rk)
         out = y + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
     else:
         raise ValueError(f"Unknown integration method: {method!r}")
@@ -443,8 +459,12 @@ def _row_from_state(
     pre_spike: int,
     post_spike: int,
     is_refractory: int,
+    rate_pre: float | None = None,
+    rate_post: float | None = None,
 ) -> dict[str, float]:
-    R, M = _reward_terms(float(y[R_PRE_IDX]), float(y[R_POST_IDX]), float(y[RBAR_IDX]), p.alpha)
+    rr_pre = rate_pre if rate_pre is not None else float(y[R_PRE_IDX])
+    rr_post = rate_post if rate_post is not None else float(y[R_POST_IDX])
+    R, M = _reward_terms(rr_pre, rr_post, float(y[RBAR_IDX]), p.alpha)
     return {
         "t": t,
         "V": float(y[V_IDX]),
@@ -453,8 +473,8 @@ def _row_from_state(
         "x_pre": float(y[X_PRE_IDX]),
         "y_post": float(y[Y_POST_IDX]),
         "E": float(y[E_IDX]),
-        "r_pre": float(y[R_PRE_IDX]),
-        "r_post": float(y[R_POST_IDX]),
+        "r_pre": rr_pre,
+        "r_post": rr_post,
         "R": float(R),
         "R_bar": float(y[RBAR_IDX]),
         "M": float(M),
@@ -473,6 +493,9 @@ def simulate(
     method = p.method.lower()
     if method not in {"euler", "rk4"}:
         raise ValueError("Params.method must be either 'euler' or 'rk4'.")
+    use_window = p.rate_mode == "window"
+    if p.rate_mode not in {"exp", "window"}:
+        raise ValueError("Params.rate_mode must be either 'exp' or 'window'.")
 
     n = int(p.T / p.dt)
     period_steps = max(1, round(1.0 / (p.r_pre_rate * p.dt)))
@@ -491,6 +514,11 @@ def simulate(
     )
     ref_remaining = p.ref_remaining0
 
+    pre_spike_buf: deque[float] = deque()
+    post_spike_buf: deque[float] = deque()
+    win_r_pre = 0.0
+    win_r_post = 0.0
+
     recorder = _build_recorder(p, hdf5_path=hdf5_path, parquet_path=parquet_path, chunk_rows=chunk_rows)
 
     for step in range(n):
@@ -503,9 +531,23 @@ def simulate(
             y[X_PRE_IDX] += 1.0
             y[R_PRE_IDX] += 1.0
             y[E_IDX] -= p.eta_minus * y[W_IDX] * y[Y_POST_IDX]
+            if use_window:
+                pre_spike_buf.append(t)
 
         post_spike = 0
         is_refractory = 1 if ref_remaining > 0.0 else 0
+
+        if use_window:
+            cutoff = t - p.rate_window
+            while pre_spike_buf and pre_spike_buf[0] < cutoff:
+                pre_spike_buf.popleft()
+            while post_spike_buf and post_spike_buf[0] < cutoff:
+                post_spike_buf.popleft()
+            win_r_pre = len(pre_spike_buf) / p.rate_window
+            win_r_post = len(post_spike_buf) / p.rate_window
+
+        rp = win_r_pre if use_window else None
+        ro = win_r_post if use_window else None
 
         if method == "euler":
             V = float(y[V_IDX])
@@ -540,14 +582,21 @@ def simulate(
                 y_post += 1.0
                 r_post += 1.0
                 E += p.eta_plus * (p.wmax - w) * x_pre
+                if use_window:
+                    post_spike_buf.append(t)
+                    win_r_post = len(post_spike_buf) / p.rate_window
+                    rp = win_r_pre
+                    ro = win_r_post
 
             y_post += p.dt * (-y_post / p.tau_minus)
             r_post += p.dt * (-r_post / p.tau_r)
             E += p.dt * (-E / p.tau_e)
 
-            R, _ = _reward_terms(r_pre, r_post, R_bar, p.alpha)
+            rew_pre = rp if use_window else r_pre
+            rew_post = ro if use_window else r_post
+            R, _ = _reward_terms(rew_pre, rew_post, R_bar, p.alpha)
             R_bar += (p.dt / p.tau_Rbar) * (-R_bar + R)
-            _, M = _reward_terms(r_pre, r_post, R_bar, p.alpha)
+            _, M = _reward_terms(rew_pre, rew_post, R_bar, p.alpha)
             w += p.dt * M * E
             w = min(p.wmax, max(0.0, w))
 
@@ -556,7 +605,7 @@ def simulate(
         else:
             if ref_remaining <= 0.0:
                 v0 = float(y[V_IDX])
-                y_trial = _advance_state(y, p.dt, p, method="rk4", voltage_active=True)
+                y_trial = _advance_state(y, p.dt, p, method="rk4", voltage_active=True, rate_pre=rp, rate_post=ro)
                 frac = _crossing_fraction(v0, float(y_trial[V_IDX]), p.theta)
 
                 if frac is None:
@@ -565,7 +614,7 @@ def simulate(
                     dt1 = frac * p.dt
                     dt2 = p.dt - dt1
 
-                    y_mid = _advance_state(y, dt1, p, method="rk4", voltage_active=True)
+                    y_mid = _advance_state(y, dt1, p, method="rk4", voltage_active=True, rate_pre=rp, rate_post=ro)
                     spike_t = t + dt1
                     recorder.append_spike("post_spike_times", spike_t)
                     post_spike = 1
@@ -575,11 +624,15 @@ def simulate(
                     y_mid[R_POST_IDX] += 1.0
                     y_mid[E_IDX] += p.eta_plus * (p.wmax - y_mid[W_IDX]) * y_mid[X_PRE_IDX]
 
-                    y = _advance_state(y_mid, dt2, p, method="rk4", voltage_active=False)
+                    if use_window:
+                        post_spike_buf.append(spike_t)
+                        ro = len(post_spike_buf) / p.rate_window
+
+                    y = _advance_state(y_mid, dt2, p, method="rk4", voltage_active=False, rate_pre=rp, rate_post=ro)
                     y[V_IDX] = p.V_reset
                     ref_remaining = max(0.0, p.tau_ref - dt2)
             else:
-                y = _advance_state(y, p.dt, p, method="rk4", voltage_active=False)
+                y = _advance_state(y, p.dt, p, method="rk4", voltage_active=False, rate_pre=rp, rate_post=ro)
                 y[V_IDX] = p.V_reset
                 ref_remaining = max(0.0, ref_remaining - p.dt)
 
@@ -592,6 +645,8 @@ def simulate(
                     pre_spike=pre_spike,
                     post_spike=post_spike,
                     is_refractory=is_refractory,
+                    rate_pre=rp,
+                    rate_post=ro,
                 )
             )
 
@@ -1008,88 +1063,111 @@ def plot_all_in_one_figure_matplotlib(rec, p: Params):
     plt.show()
 
 
+ALL_PLOT_VARIABLES = ["V", "I_s", "x_pre", "y_post", "E", "r_pre", "r_post", "R", "R_bar", "M", "w"]
+
+VARIABLE_TITLES = {
+    "V": "Membrane potential V",
+    "I_s": "Synaptic current I_s",
+    "x_pre": "STDP pre-trace x_pre",
+    "y_post": "STDP post-trace y_post",
+    "E": "Eligibility trace E",
+    "r_pre": "Pre-synaptic firing rate r_pre",
+    "r_post": "Post-synaptic firing rate r_post",
+    "R": "Reward R",
+    "R_bar": "Reward baseline R_bar",
+    "M": "Modulation M",
+    "w": "Synaptic weight w",
+}
+
+MARKER_MODE_VARIABLES = {"E", "w"}
+
+
 def build_all_in_one_plotly_figure(
     rec_or_path,
     p: Params,
     max_points: int = 40_000,
     x0: float | None = None,
     x1: float | None = None,
+    variables: list[str] | None = None,
 ):
     if go is None or make_subplots is None:
         raise ImportError("plotly is required for interactive plotting. Install it with `uv add plotly`.")
 
-    columns = ["t", "V", "I_s", "x_pre", "y_post", "E", "r_pre", "r_post", "R", "R_bar", "M", "w"]
+    plot_vars = variables if variables is not None else ALL_PLOT_VARIABLES
+    show_spikes = variables is None
+    n_rows = len(plot_vars) + (1 if show_spikes else 0)
+
+    needed_columns = set(plot_vars)
+    if "r_post" in needed_columns:
+        needed_columns.add("r_pre")
+    columns = ["t"] + [v for v in ALL_PLOT_VARIABLES if v in needed_columns]
+
     frame, spikes = load_time_series_frame(rec_or_path, columns=columns, max_points=max_points, x0=x0, x1=x1)
     arrays = {col: _plotly_values(frame[col].to_numpy()) for col in columns}
     t = arrays["t"]
 
+    titles = []
+    if show_spikes:
+        titles.append("Spike times")
+    titles.extend(VARIABLE_TITLES[v] for v in plot_vars)
+
     fig = make_subplots(
-        rows=12,
+        rows=n_rows,
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.02,
-        subplot_titles=(
-            "Spike times",
-            "Membrane potential V",
-            "Synaptic current I_s",
-            "STDP pre-trace x_pre",
-            "STDP post-trace y_post",
-            "Eligibility trace E",
-            "Pre-synaptic firing rate r_pre",
-            "Post-synaptic firing rate r_post",
-            "Reward R",
-            "Reward baseline R_bar",
-            "Modulation M",
-            "Synaptic weight w",
-        ),
+        subplot_titles=titles,
     )
 
-    fig.add_trace(
-        go.Scattergl(
-            x=_plotly_values(spikes["pre_spike_times"]),
-            y=_plotly_values(np.ones(len(spikes["pre_spike_times"]), dtype=np.float64)),
-            mode="markers",
-            name="pre",
-            marker={"size": 4},
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scattergl(
-            x=_plotly_values(spikes["post_spike_times"]),
-            y=_plotly_values(np.zeros(len(spikes["post_spike_times"]), dtype=np.float64)),
-            mode="markers",
-            name="post",
-            marker={"size": 4},
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(go.Scattergl(x=t, y=arrays["V"], name="V"), row=2, col=1)
-    fig.add_hline(y=p.theta, line_dash="dash", row=2, col=1)
-    fig.add_hline(y=p.V_reset, line_dash="dot", row=2, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["I_s"], name="I_s"), row=3, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["x_pre"], name="x_pre"), row=4, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["y_post"], name="y_post"), row=5, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["E"], name="E"), row=6, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["r_pre"], name="r_pre"), row=7, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["r_post"], name="r_post"), row=8, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=_plotly_values(p.alpha * np.asarray(frame["r_pre"].to_numpy())), name="target"), row=8, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["R"], name="R"), row=9, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["R_bar"], name="R_bar"), row=10, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["M"], name="M"), row=11, col=1)
-    fig.add_trace(go.Scattergl(x=t, y=arrays["w"], name="w"), row=12, col=1)
+    row = 1
+    if show_spikes:
+        for label, key, y_base in [("pre", "pre_spike_times", 1.0), ("post", "post_spike_times", 0.0)]:
+            times = spikes[key]
+            n_spikes = len(times)
+            if n_spikes > 0:
+                xs = np.empty(3 * n_spikes)
+                ys = np.empty(3 * n_spikes)
+                xs[0::3] = times
+                xs[1::3] = times
+                xs[2::3] = np.nan
+                ys[0::3] = y_base - 0.4
+                ys[1::3] = y_base + 0.4
+                ys[2::3] = np.nan
+            else:
+                xs = np.array([])
+                ys = np.array([])
+            fig.add_trace(
+                go.Scattergl(
+                    x=_plotly_values(xs),
+                    y=_plotly_values(ys),
+                    mode="lines",
+                    name=label,
+                    line={"width": 1},
+                ),
+                row=row,
+                col=1,
+            )
+        row += 1
 
-    fig.update_layout(height=2400, width=1400, title="Neuromodulated STDP simulation", showlegend=True)
-    fig.update_xaxes(title_text="time (s)", row=12, col=1)
+    for var in plot_vars:
+        mode = "markers" if var in MARKER_MODE_VARIABLES else "lines"
+        fig.add_trace(go.Scattergl(x=t, y=arrays[var], name=var, mode=mode), row=row, col=1)
+        if var == "V":
+            fig.add_hline(y=p.theta, line_dash="dash", row=row, col=1)
+            fig.add_hline(y=p.V_reset, line_dash="dot", row=row, col=1)
+        elif var == "r_post":
+            fig.add_trace(go.Scattergl(x=t, y=_plotly_values(p.alpha * np.asarray(frame["r_pre"].to_numpy())), name="target"), row=row, col=1)
+        row += 1
+
+    fig.update_layout(height=max(400, 200 * n_rows), width=1400, title="Neuromodulated STDP simulation", showlegend=True)
+    fig.update_xaxes(title_text="time (s)", row=n_rows, col=1)
     if x0 is not None and x1 is not None:
-        fig.update_xaxes(range=[x0, x1], row=12, col=1)
+        fig.update_xaxes(range=[x0, x1], row=n_rows, col=1)
     return fig
 
 
-def plot_all_in_one_plotly(rec_or_path, p: Params, output_html: str = "simulation.html", max_points: int = 40_000):
-    fig = build_all_in_one_plotly_figure(rec_or_path, p, max_points=max_points)
+def plot_all_in_one_plotly(rec_or_path, p: Params, output_html: str = "simulation.html", max_points: int = 40_000, variables: list[str] | None = None):
+    fig = build_all_in_one_plotly_figure(rec_or_path, p, max_points=max_points, variables=variables)
     return write_plotly_html(fig, output_html)
 
 
@@ -1107,7 +1185,7 @@ def _plotly_package_js_path() -> Path:
     raise FileNotFoundError(f"Could not locate Plotly JS asset. Checked: {', '.join(str(path) for path in candidates)}")
 
 
-def serve_zoom_adaptive_plot(source_path: str | Path, p: Params, host: str = "127.0.0.1", port: int = 8050, max_points: int = 40_000):
+def serve_zoom_adaptive_plot(source_path: str | Path, p: Params, host: str = "127.0.0.1", port: int = 8050, max_points: int = 40_000, variables: list[str] | None = None):
     source = Path(source_path)
     if not source.exists():
         raise FileNotFoundError(f"Plot source does not exist: {source}")
@@ -1234,7 +1312,7 @@ def serve_zoom_adaptive_plot(source_path: str | Path, p: Params, host: str = "12
                 x0 = float(query["x0"][0]) if "x0" in query else None
                 x1 = float(query["x1"][0]) if "x1" in query else None
                 local_max_points = int(query.get("max_points", [str(max_points)])[0])
-                fig = build_all_in_one_plotly_figure(source, p, max_points=local_max_points, x0=x0, x1=x1)
+                fig = build_all_in_one_plotly_figure(source, p, max_points=local_max_points, x0=x0, x1=x1, variables=variables)
                 body = json.dumps(fig.to_plotly_json()).encode("utf-8")
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1270,17 +1348,28 @@ def main(
     host: Annotated[str, typer.Option(help="Host for server backend.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Port for server backend.")] = 8050,
     method: Annotated[str, typer.Option(help="Integrator for smooth dynamics.")] = "euler",
+    rate_mode: Annotated[str, typer.Option(help="Firing-rate mode: 'exp' (exponential trace) or 'window' (spike count).")] = "exp",
+    rate_window: Annotated[float, typer.Option(help="Window duration in seconds for 'window' rate mode.")] = 0.5,
     reuse_existing: Annotated[bool, typer.Option(help="Reuse an existing HDF5/Parquet file instead of rerunning the simulation.")] = False,
+    variables: Annotated[list[str] | None, typer.Option(help="Variables to plot (e.g. --variables E --variables w). Defaults to all.")] = None,
 ):
     if plot_backend not in {"matplotlib", "plotly", "server"}:
         raise typer.BadParameter(f"plot-backend must be one of: matplotlib, plotly, server (got {plot_backend!r})")
     if method not in {"euler", "rk4"}:
         raise typer.BadParameter(f"method must be one of: euler, rk4 (got {method!r})")
+    if rate_mode not in {"exp", "window"}:
+        raise typer.BadParameter(f"rate-mode must be one of: exp, window (got {rate_mode!r})")
+    if variables is not None:
+        bad = [v for v in variables if v not in ALL_PLOT_VARIABLES]
+        if bad:
+            raise typer.BadParameter(f"Unknown variables: {bad}. Choose from: {ALL_PLOT_VARIABLES}")
 
     # params = Params(T=2000, method="rk4")
     params = Params(
-        T=100,
+        T=10,
         method="rk4",
+        rate_mode=rate_mode,
+        rate_window=rate_window,
         V0=-62.39967779660166,
         I_s0=4.5401991625251883e-05,
         x_pre0=0.08942548983512577,
@@ -1324,6 +1413,7 @@ def main(
             host=host,
             port=port,
             max_points=max_plot_points,
+            variables=variables,
         )
     else:
         plot_source = parquet or hdf5 or rec
@@ -1332,6 +1422,7 @@ def main(
             params,
             output_html=plot_html,
             max_points=max_plot_points,
+            variables=variables,
         )
         print(f"Wrote interactive plot to {output_html}")
 
