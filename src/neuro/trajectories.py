@@ -12,7 +12,7 @@ except ImportError:
     go = None
     make_subplots = None
 
-from main import Params, _plotly_values, load_plot_frame, simulate, write_plotly_html
+from neuro.sim import Params, _plotly_values, load_plot_frame, simulate, write_plotly_html
 
 
 VAR_NAMES = ["V", "I_s", "x_pre", "y_post", "E", "r_pre", "r_post", "R_bar", "w"]

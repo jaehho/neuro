@@ -1,5 +1,18 @@
 __pycache__/
-.venv
+*.pyc
+.venv/
 .env
 .envrc
+
+# Generated output
+output/*.parquet
+output/*.png
+output/*.html
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Data
 data/
