@@ -53,9 +53,9 @@ def _metrics(rec: dict, p: Params) -> dict:
     ps = rec["post_spike_times"]
     late = ps[ps >= half]
     rate = len(late) / (p.T - half) if p.T > half else 0.0
-    target = p.alpha * p.r_pre_rate
+    target = p.alpha * p.r_pre_rates[0]
 
-    wl = rec["w"][t >= half]
+    wl = rec["w1"][t >= half]
     w_mean = float(np.mean(wl)) if len(wl) else 0.0
     w_std = float(np.std(wl)) if len(wl) else 0.0
 
@@ -76,7 +76,7 @@ def _metrics(rec: dict, p: Params) -> dict:
         target_rate=target,
         rate_error=rate_err,
         relative_rate_error=rel_err,
-        w_final=float(rec["w"][-1]),
+        w_final=float(rec["w1"][-1]),
         w_mean=w_mean,
         w_std=w_std,
         n_post=len(ps),
@@ -188,7 +188,7 @@ def main() -> None:
             print(f"  {label}", end="", flush=True)
 
             try:
-                p, rec = _run(r_pre_rate=float(rpr), alpha=float(alpha))
+                p, rec = _run(r_pre_rates=float(rpr), alpha=float(alpha))
                 m = _metrics(rec, p)
                 m["r_pre_rate"] = float(rpr)
                 m["alpha"] = float(alpha)
@@ -196,7 +196,7 @@ def main() -> None:
                 m["error"] = ""
             except Exception as ex:
                 m = dict(
-                    r_pre_rate=float(rpr),
+                    r_pre_rates=float(rpr),
                     alpha=float(alpha),
                     post_rate=np.nan,
                     target_rate=float(alpha * rpr),

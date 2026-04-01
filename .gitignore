@@ -8,6 +8,7 @@ __pycache__/
 output/*.parquet
 output/*.png
 output/*.html
+output/*.db
 
 # Build artifacts
 *.egg-info/

@@ -40,14 +40,14 @@ def _metrics(rec, p):
     ps = rec["post_spike_times"]
     late = ps[ps >= half]
     rate = len(late) / (p.T - half) if p.T > half else 0.0
-    wl = rec["w"][t >= half]
+    wl = rec["w1"][t >= half]
     return dict(
         post_rate=rate,
-        w_final=float(rec["w"][-1]),
+        w_final=float(rec["w1"][-1]),
         w_mean=float(np.mean(wl)) if len(wl) else 0.0,
         w_std=float(np.std(wl)) if len(wl) else 0.0,
         n_post=len(ps),
-        target=p.alpha * p.r_pre_rate,
+        target=p.alpha * p.r_pre_rates[0],
     )
 
 
@@ -273,7 +273,7 @@ def ic_sensitivity():
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
     for w0 in w0s:
         _, rec = _run(T=10.0, record_every=1e-3, w0=w0)
-        ax1.plot(rec["t"], rec["w"], label=f"w0={w0}")
+        ax1.plot(rec["t"], rec["w1"], label=f"w0={w0}")
         ax2.plot(rec["t"], rec["r_post"], label=f"w0={w0}")
     ax1.set(ylabel="w(t)", title="Weight trajectories from different initial conditions")
     ax1.legend()
@@ -299,8 +299,8 @@ def euler_vs_rk4():
         _, rec = _run(T=2.0, method=method, record_every=1e-4)
         axes[0].plot(rec["t"], rec["V"], label=method,
                      linewidth=0.5, alpha=0.7)
-        axes[1].plot(rec["t"], rec["w"], label=method)
-        axes[2].plot(rec["t"], rec["E"], label=method)
+        axes[1].plot(rec["t"], rec["w1"], label=method)
+        axes[2].plot(rec["t"], rec["E1"], label=method)
     axes[0].set(ylabel="V (mV)", title="Membrane potential")
     axes[1].set(ylabel="w", title="Synaptic weight")
     axes[2].set(xlabel="Time (s)", ylabel="E", title="Eligibility trace")

@@ -122,6 +122,12 @@ class TestComputeRewardTargetRate:
         R = _compute_reward(p, 10.0, 5.0, reward_pulse=0.75)
         assert R == pytest.approx(0.75)
 
+    def test_contingent_passthrough(self) -> None:
+        """Contingent mode returns the reward pulse directly."""
+        p = Params(reward_signal="contingent")
+        R = _compute_reward(p, 10.0, 5.0, reward_pulse=0.5)
+        assert R == pytest.approx(0.5)
+
     def test_fixed_target_func(self) -> None:
         """target_func='fixed' ignores r_pre."""
         p = Params(reward_signal="target_rate", target_func="fixed", r_target=8.0)

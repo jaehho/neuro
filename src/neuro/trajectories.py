@@ -15,17 +15,17 @@ except ImportError:
 from neuro.sim import Params, _plotly_values, load_plot_frame, simulate, write_plotly_html
 
 
-VAR_NAMES = ["V", "I_s", "x_pre", "y_post", "E", "r_pre", "r_post", "R_bar", "w"]
+VAR_NAMES = ["V", "I_s1", "x_pre1", "y_post", "E1", "r_pre1", "r_post", "R_bar", "w1"]
 LABELS = {
     "V": "V (mV)",
-    "I_s": "I_s",
-    "x_pre": "x_pre",
+    "I_s1": "I_s1",
+    "x_pre1": "x_pre1",
     "y_post": "y_post",
-    "E": "E",
-    "r_pre": "r_pre",
+    "E1": "E1",
+    "r_pre1": "r_pre1",
     "r_post": "r_post",
     "R_bar": "R_bar",
-    "w": "w",
+    "w1": "w1",
 }
 
 

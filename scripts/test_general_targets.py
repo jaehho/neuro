@@ -52,7 +52,7 @@ def _run(target_func: str, target_func_params: dict, r_pre_rate: float = 20.0, T
         reward_signal="target_rate",
         target_func=target_func,
         target_func_params=json.dumps(target_func_params),
-        r_pre_rate=r_pre_rate,
+        r_pre_rates=r_pre_rate,
     )
     rec = simulate(p)
     return p, rec
@@ -71,9 +71,9 @@ def _metrics(rec: dict, p: Params) -> dict:
     ps = rec["post_spike_times"]
     late = ps[ps >= half]
     actual_rate = len(late) / (p.T - half) if p.T > half else 0.0
-    target_rate = _target_rate_hz(p, p.r_pre_rate)
+    target_rate = _target_rate_hz(p, p.r_pre_rates[0])
 
-    wl = rec["w"][t >= half]
+    wl = rec["w1"][t >= half]
     w_mean = float(np.mean(wl)) if len(wl) else 0.0
     w_std = float(np.std(wl)) if len(wl) else 0.0
 
@@ -88,7 +88,7 @@ def _metrics(rec: dict, p: Params) -> dict:
         target_rate=target_rate,
         rate_error=rate_err,
         relative_rate_error=rel_err,
-        w_final=float(rec["w"][-1]),
+        w_final=float(rec["w1"][-1]),
         w_mean=w_mean,
         w_std=w_std,
         n_post=len(ps),
@@ -145,7 +145,7 @@ def plot_time_series() -> None:
         func, coeffs = TARGET_CONFIGS[name]
         print(f"  Running {name} at 20 Hz ...", end="", flush=True)
         t0 = time.time()
-        p, rec = _run(func, coeffs, r_pre_rate=20.0)
+        p, rec = _run(func, coeffs, r_pre_rates=20.0)
         m = _metrics(rec, p)
         status = _classify(m)
         elapsed = time.time() - t0
@@ -155,7 +155,7 @@ def plot_time_series() -> None:
 
         # Weight evolution
         ax_w = axes[i, 0]
-        ax_w.plot(t, rec["w"], linewidth=0.8, color="#2a9d8f")
+        ax_w.plot(t, rec["w1"], linewidth=0.8, color="#2a9d8f")
         ax_w.set_ylabel("w", fontsize=10)
         ax_w.set_title(f"{name}  [{status}]", fontsize=11, fontweight="bold")
         ax_w.grid(True, alpha=0.3)
@@ -163,7 +163,7 @@ def plot_time_series() -> None:
         # Actual r_post vs target
         ax_r = axes[i, 1]
         ax_r.plot(t, rec["r_post"], linewidth=0.8, color="#264653", label="r_post")
-        target_trace = max(_compute_target_r_post(p, p.r_pre_rate * p.tau_r), 0.0)
+        target_trace = max(_compute_target_r_post(p, p.r_pre_rates[0] * p.tau_r), 0.0)
         ax_r.axhline(y=target_trace, color="#e76f51", linestyle="--", linewidth=1.5, label=f"target = {target_trace:.2f}")
         ax_r.set_ylabel("r_post", fontsize=10)
         ax_r.legend(fontsize=8, loc="upper right")
@@ -190,7 +190,7 @@ def plot_actual_vs_target() -> None:
         for rpr in R_PRE_RATES:
             print(f"  Running {name} at {rpr:.0f} Hz ...", end="", flush=True)
             t0 = time.time()
-            p, rec = _run(func, coeffs, r_pre_rate=rpr)
+            p, rec = _run(func, coeffs, r_pre_rates=rpr)
             m = _metrics(rec, p)
             status = _classify(m)
             elapsed = time.time() - t0

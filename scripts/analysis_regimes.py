@@ -88,10 +88,10 @@ def _metrics(rec, p):
     ps = rec["post_spike_times"]
     late = ps[ps >= half]
     rate = len(late) / (p.T - half) if p.T > half else 0.0
-    wl = rec["w"][t >= half]
+    wl = rec["w1"][t >= half]
     return dict(
         post_rate=rate,
-        w_final=float(rec["w"][-1]),
+        w_final=float(rec["w1"][-1]),
         w_mean=float(np.mean(wl)) if len(wl) else 0.0,
         w_std=float(np.std(wl)) if len(wl) else 0.0,
         n_post=len(ps),
@@ -100,7 +100,7 @@ def _metrics(rec, p):
 
 def _verify(rec, p, name):
     """Sanity checks: no NaN/Inf, weight in bounds."""
-    for key in ("w", "R", "M", "R_bar", "E"):
+    for key in ("w1", "w2", "R", "M", "R_bar", "E1", "E2"):
         arr = rec[key]
         if np.any(np.isnan(arr)):
             print(f"    WARNING: NaN in {key} for {name}")
@@ -108,10 +108,11 @@ def _verify(rec, p, name):
         if np.any(np.isinf(arr)):
             print(f"    WARNING: Inf in {key} for {name}")
             return False
-    w = rec["w"]
-    if np.any(w < -1e-9) or np.any(w > p.wmax + 1e-9):
-        print(f"    WARNING: weight out of [0, wmax] for {name}")
-        return False
+    for wkey in ("w1", "w2"):
+        w = rec[wkey]
+        if np.any(w < -1e-9) or np.any(w > p.wmax + 1e-9):
+            print(f"    WARNING: {wkey} out of [0, wmax] for {name}")
+            return False
     return True
 
 
@@ -145,9 +146,9 @@ if __name__ == "__main__":
 
     fig, axes = plt.subplots(4, 1, figsize=(15, 16), sharex=True)
     panels = [
-        ("w",      "Synaptic weight w(t)"),
+        ("w1",     "Synaptic weight w1(t)"),
         ("r_post", "Post-synaptic rate trace r_post(t)"),
-        ("E",      "Eligibility trace E(t)"),
+        ("E1",     "Eligibility trace E1(t)"),
         ("M",      "Modulation signal M(t)"),
     ]
     for ax, (key, title) in zip(axes, panels):

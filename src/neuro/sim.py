@@ -1,10 +1,12 @@
 """
 Neuromodulated Spike-Timing-Dependent Plasticity (STDP) simulation.
 
-Three-factor learning rule for a single excitatory synapse onto a leaky
-integrate-and-fire (LIF) neuron:  dw/dt = M(t) · E(t), where
-  - E(t) is an eligibility trace shaped by STDP spike-timing correlations
-  - M(t) is a neuromodulatory signal whose role is set by ``neuromod_type``
+N presynaptic neurons project onto one postsynaptic LIF neuron.
+Each synapse i has its own eligibility trace E_i and weight w_i.
+The three-factor learning rule is:  dw_i/dt = M(t) · E_i(t), where
+
+  - E_i(t) is the per-synapse eligibility trace shaped by STDP correlations
+  - M(t) is a global neuromodulatory signal set by ``neuromod_type``
     (Frémaux & Gerstner 2016, Eq. 14):
         M = R − R̄      covariance rule (RPE / dopaminergic)
         M = R            gated Hebbian learning
@@ -12,13 +14,21 @@ integrate-and-fire (LIF) neuron:  dw/dt = M(t) · E(t), where
         M = const        non-modulated STDP
   - R(t) is a reward signal set by ``reward_signal``:
         target_rate      R = -(r_post - target)²  (self-supervisory demonstration)
-        biofeedback      R = delayed pulse after post-spike (Izhikevich 2007 /
-                         Legenstein et al. 2008 paradigm)
+        biofeedback      R = delayed pulse after every post-spike (Legenstein+ 2008)
+        contingent       R = delayed pulse only when pre1 fires within a
+                         coincidence window before a post-spike (Izhikevich 2007;
+                         Frémaux & Gerstner 2016, Eq. 10 "gated-Hebbian")
+
+The contingent reward demonstrates spatial credit assignment: both synapses
+receive the same global M, but only synapse 1 (target) has high E when the
+reward arrives — because reward is triggered by pre1→post coincidences.
 
 References
 ----------
 Frémaux & Gerstner (2016). Neuromodulated STDP, and theory of three-factor
     learning rules. Front. Neural Circuits 9:85.
+Frémaux, Sprekeler & Gerstner (2010). Functional requirements for
+    reward-modulated STDP. J. Neurosci. 30(40):13326–13337.
 Izhikevich (2007). Solving the distal reward problem through linkage of
     STDP and dopamine signaling. Cereb. Cortex 17(10):2443–2452.
 Legenstein, Pecevski & Maass (2008). A learning theory for reward-modulated
@@ -31,7 +41,9 @@ from __future__ import annotations
 
 import json
 from collections import deque
-from dataclasses import asdict, dataclass
+
+from tqdm import tqdm
+from dataclasses import asdict, dataclass, field, fields
 from typing import Annotated
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -50,35 +62,72 @@ import typer
 from plotly.subplots import make_subplots
 
 
-SERIES_KEYS = [
-    "t",
-    "V",
-    "w",
-    "I_s",
-    "x_pre",
-    "y_post",
-    "E",
-    "r_pre",
-    "r_post",
-    "R",
-    "R_bar",
-    "M",
-    "pre_spike_bin",
-    "post_spike_bin",
-    "is_refractory",
-]
+# ── Dynamic key generation ────────────────────────────────────────
 
-SPIKE_KEYS = ["pre_spike_times", "post_spike_times"]
+def series_keys(n_pre: int) -> list[str]:
+    keys = ["t", "V"]
+    keys += [f"w{i+1}" for i in range(n_pre)]
+    keys += [f"I_s{i+1}" for i in range(n_pre)]
+    keys += [f"x_pre{i+1}" for i in range(n_pre)]
+    keys.append("y_post")
+    keys += [f"E{i+1}" for i in range(n_pre)]
+    keys += [f"r_pre{i+1}" for i in range(n_pre)]
+    keys.append("r_post")
+    keys += ["R", "R_bar", "M"]
+    keys += [f"pre{i+1}_spike_bin" for i in range(n_pre)]
+    keys += ["post_spike_bin", "is_refractory"]
+    return keys
+
+
+def spike_keys(n_pre: int) -> list[str]:
+    return [f"pre{i+1}_spike_times" for i in range(n_pre)] + ["post_spike_times"]
+
+
+SERIES_KEYS = series_keys(2)
+SPIKE_KEYS = spike_keys(2)
+
+
+# ── State vector layout: 4 shared + n_pre × 5 per-synapse ────────
+# Shared: [V, y_post, r_post, R_bar]
+# Per synapse i: [I_s, x_pre, E, r_pre, w]
+
+N_SHARED = 4
+N_PER_SYN = 5
 
 V_IDX = 0
-I_S_IDX = 1
-X_PRE_IDX = 2
-Y_POST_IDX = 3
-E_IDX = 4
-R_PRE_IDX = 5
-R_POST_IDX = 6
-RBAR_IDX = 7
-W_IDX = 8
+Y_POST_IDX = 1
+R_POST_IDX = 2
+RBAR_IDX = 3
+
+
+def _syn_base(i: int) -> int:
+    """Start index for synapse i (0-indexed) in the state vector."""
+    return N_SHARED + i * N_PER_SYN
+
+
+def _I_s_idx(i: int) -> int: return _syn_base(i)
+def _X_pre_idx(i: int) -> int: return _syn_base(i) + 1
+def _E_idx(i: int) -> int: return _syn_base(i) + 2
+def _R_pre_idx(i: int) -> int: return _syn_base(i) + 3
+def _W_idx(i: int) -> int: return _syn_base(i) + 4
+
+
+def n_state(n_pre: int) -> int:
+    return N_SHARED + n_pre * N_PER_SYN
+
+
+# Backward-compatible aliases for n_pre=2
+I_S1_IDX = _I_s_idx(0)
+X_PRE1_IDX = _X_pre_idx(0)
+E1_IDX = _E_idx(0)
+R_PRE1_IDX = _R_pre_idx(0)
+W1_IDX = _W_idx(0)
+I_S2_IDX = _I_s_idx(1)
+X_PRE2_IDX = _X_pre_idx(1)
+E2_IDX = _E_idx(1)
+R_PRE2_IDX = _R_pre_idx(1)
+W2_IDX = _W_idx(1)
+N_STATE = n_state(2)
 
 
 @dataclass
@@ -86,12 +135,16 @@ class Params:
     # ── Simulation ──────────────────────────────────────────
     T: float = 20.0           # Total duration (s)
     dt: float = 1e-4          # Integration timestep (s); 0.1 ms
-    seed: int = 1             # NOTE: currently unused — pre-spikes are deterministic
+    seed: int = 1
     record_every: float = 1e-4
     method: str = "euler"     # Integration method: "euler" | "rk4"
 
-    # ── Pre-synaptic input ──────────────────────────────────
-    r_pre_rate: float = 20.0  # Regular (not Poisson) firing rate (Hz)
+    # ── Network topology ───────────────────────────────────
+    n_pre: int = 1            # Number of pre-synaptic neurons
+
+    # ── Pre-synaptic input (per-synapse tuples) ────────────
+    r_pre_rates: tuple[float, ...] | float = (20.0,)
+    poisson: bool = False     # Poisson spike trains (False = deterministic)
 
     # ── LIF neuron (Dayan & Abbott 2001, Ch. 5) ────────────
     tau_m: float = 0.02       # Membrane time constant (s)
@@ -105,22 +158,22 @@ class Params:
     # ── Synaptic current ───────────────────────────────────
     tau_s: float = 0.005      # Synaptic decay constant (s); 5 ms
     R_m: float = 50.0         # Membrane input resistance (MΩ)
-    I_s0: float = 0.0
+    I_s0: tuple[float, ...] | float = (0.0,)
 
     # ── STDP traces (Bi & Poo 1998) ───────────────────────
     tau_plus: float = 0.02    # Pre→post LTP window (s); 20 ms
     tau_minus: float = 0.02   # Post→pre LTD window (s); 20 ms
-    x_pre0: float = 0.0
+    x_pre0: tuple[float, ...] | float = (0.0,)
     y_post0: float = 0.0
 
     # ── Firing-rate estimation ─────────────────────────────
     tau_r: float = 0.5        # Exponential rate-trace decay (s)
-    r_pre0: float = 0.0
+    r_pre0: tuple[float, ...] | float = (0.0,)
     r_post0: float = 0.0
 
     # ── Eligibility trace (Frémaux & Gerstner 2016) ───────
     tau_e: float = 0.5        # Eligibility decay (s)
-    E0: float = 0.0
+    E0: tuple[float, ...] | float = (0.0,)
 
     # ── Reward baseline ────────────────────────────────────
     tau_Rbar: float = 5.0     # Baseline tracking time constant (s)
@@ -130,7 +183,7 @@ class Params:
     neuromod_type: str = "covariance"  # covariance | gated | surprise | constant
 
     # ── Reward signal ──────────────────────────────────────
-    reward_signal: str = "target_rate"  # target_rate | biofeedback
+    reward_signal: str = "target_rate"  # target_rate | biofeedback | contingent
 
     # ── Target-rate parameters (reward_signal="target_rate") ──
     target_func: str = "fixed"         # fixed | linear | affine | quadratic | sqrt | log | sin | power
@@ -138,20 +191,65 @@ class Params:
     r_target: float = 10.0             # Target rate-trace value for target_func="fixed"
     alpha: float = 0.5                 # Slope for target_func="linear": target = α · r_pre
 
-    # ── Biofeedback parameters (reward_signal="biofeedback") ──
-    reward_delay: float = 1.0          # Delay from post-spike to reward delivery (s)
+    # ── Reward delivery (biofeedback / contingent) ──────────
+    reward_delay: float = 1.0          # Delay from event to reward delivery (s)
     reward_amount: float = 1.0         # Reward pulse magnitude
     reward_tau: float = 0.2            # Reward pulse decay time constant (s)
+    coincidence_window: float = 0.02   # Target→post window for contingent reward (s); 20 ms
 
     # ── Rate estimation mode ───────────────────────────────
     rate_mode: str = "exp"    # "exp" (trace) or "window" (spike count)
     rate_window: float = 0.5  # Window duration for "window" mode (s)
 
-    # ── Synaptic weight ────────────────────────────────────
-    w0: float = 2.0           # Initial weight
+    # ── Synaptic weights (per-synapse tuples) ──────────────
+    w0: tuple[float, ...] | float = (2.0,)
     wmax: float = 10.0        # Hard upper bound (soft bounds in STDP)
     eta_plus: float = 1e-4    # LTP eligibility step size
     eta_minus: float = 1e-4   # LTD eligibility step size
+
+    def __post_init__(self):
+        n = self.n_pre
+        # Broadcast scalars (or wrong-length tuples with uniform values) to length n_pre
+        for attr in ("r_pre_rates", "I_s0", "x_pre0", "r_pre0", "E0", "w0"):
+            val = getattr(self, attr)
+            if isinstance(val, (int, float)):
+                object.__setattr__(self, attr, tuple(val for _ in range(n)))
+            elif not isinstance(val, tuple):
+                object.__setattr__(self, attr, tuple(val))
+            current = getattr(self, attr)
+            if len(current) != n:
+                # If all values are the same, broadcast; otherwise error
+                if len(set(current)) <= 1:
+                    fill = current[0] if current else 0.0
+                    object.__setattr__(self, attr, tuple(fill for _ in range(n)))
+                else:
+                    raise ValueError(f"{attr} has length {len(current)}, expected {n} (n_pre={n})")
+
+    # ── Backward-compatible properties for n_pre=2 callers ─
+    @property
+    def r_pre_rate_1(self) -> float: return self.r_pre_rates[0]
+    @property
+    def r_pre_rate_2(self) -> float: return self.r_pre_rates[1]
+    @property
+    def w1_0(self) -> float: return self.w0[0]
+    @property
+    def w2_0(self) -> float: return self.w0[1]
+    @property
+    def I_s1_0(self) -> float: return self.I_s0[0]
+    @property
+    def I_s2_0(self) -> float: return self.I_s0[1]
+    @property
+    def x_pre1_0(self) -> float: return self.x_pre0[0]
+    @property
+    def x_pre2_0(self) -> float: return self.x_pre0[1]
+    @property
+    def r_pre1_0(self) -> float: return self.r_pre0[0]
+    @property
+    def r_pre2_0(self) -> float: return self.r_pre0[1]
+    @property
+    def E1_0(self) -> float: return self.E0[0]
+    @property
+    def E2_0(self) -> float: return self.E0[1]
 
 
 def _sampling_stride(total_rows: int, max_points: int) -> int:
@@ -187,9 +285,10 @@ class Recorder:
 
 
 class MemoryRecorder(Recorder):
-    def __init__(self, capacity: int):
-        self.data = {key: np.zeros(capacity, dtype=np.float64) for key in SERIES_KEYS}
-        self.spikes = {key: [] for key in SPIKE_KEYS}
+    def __init__(self, capacity: int, ser_keys: list[str], spk_keys: list[str]):
+        self.data = {key: np.zeros(capacity, dtype=np.float64) for key in ser_keys}
+        self.spikes: dict[str, list[float]] = {key: [] for key in spk_keys}
+        self.spk_keys = spk_keys
         self.k = 0
 
     def append(self, row: dict[str, float]) -> None:
@@ -208,7 +307,8 @@ class MemoryRecorder(Recorder):
 
 
 class HDF5Recorder(Recorder):
-    def __init__(self, path: str | Path, expected_rows: int, chunk_rows: int, params: Params):
+    def __init__(self, path: str | Path, expected_rows: int, chunk_rows: int, params: Params,
+                 ser_keys: list[str], spk_keys: list[str]):
         if h5py is None:
             raise ImportError("h5py is required for HDF5 output. Install it with `uv add h5py`.")
 
@@ -230,7 +330,7 @@ class HDF5Recorder(Recorder):
                 chunks=(chunk,),
                 compression="gzip",
             )
-            for key in SERIES_KEYS
+            for key in ser_keys
         }
         self.spike_datasets = {
             key: self.file.create_dataset(
@@ -241,10 +341,10 @@ class HDF5Recorder(Recorder):
                 chunks=(chunk,),
                 compression="gzip",
             )
-            for key in SPIKE_KEYS
+            for key in spk_keys
         }
         self.k = 0
-        self.spike_counts = {key: 0 for key in SPIKE_KEYS}
+        self.spike_counts = {key: 0 for key in spk_keys}
 
     def append(self, row: dict[str, float]) -> None:
         for key, value in row.items():
@@ -268,7 +368,8 @@ class HDF5Recorder(Recorder):
 
 
 class ParquetRecorder(Recorder):
-    def __init__(self, path: str | Path, chunk_rows: int, params: Params):
+    def __init__(self, path: str | Path, chunk_rows: int, params: Params,
+                 ser_keys: list[str], spk_keys: list[str]):
         if pa is None or pq is None:
             raise ImportError("pyarrow is required for Parquet export. Install it with `uv add pyarrow`.")
 
@@ -280,7 +381,8 @@ class ParquetRecorder(Recorder):
             b"format": b"neuro-recording-v1",
             b"params_json": json.dumps(asdict(params)).encode("utf-8"),
         }
-        self.schema = pa.schema([(key, pa.float64()) for key in SERIES_KEYS], metadata=metadata)
+        self.ser_keys = ser_keys
+        self.schema = pa.schema([(key, pa.float64()) for key in ser_keys], metadata=metadata)
         self.spike_schema = pa.schema(
             [("t", pa.float64()), ("spike_type", pa.string())],
             metadata=metadata,
@@ -288,8 +390,8 @@ class ParquetRecorder(Recorder):
         self.writer = pq.ParquetWriter(self.path, self.schema, compression="zstd")
         self.spike_writer = pq.ParquetWriter(self.spike_path, self.spike_schema, compression="zstd")
         self.chunk_rows = chunk_rows
-        self.buffer = {key: [] for key in SERIES_KEYS}
-        self.spike_buffer = {"t": [], "spike_type": []}
+        self.buffer: dict[str, list[float]] = {key: [] for key in ser_keys}
+        self.spike_buffer: dict[str, list] = {"t": [], "spike_type": []}
         self.rows_written = 0
         self.spikes_written = 0
 
@@ -301,7 +403,7 @@ class ParquetRecorder(Recorder):
             schema=self.schema,
         )
         self.writer.write_table(table)
-        self.buffer = {key: [] for key in SERIES_KEYS}
+        self.buffer = {key: [] for key in self.ser_keys}
 
     def _flush_spikes(self) -> None:
         if not self.spike_buffer["t"]:
@@ -325,7 +427,9 @@ class ParquetRecorder(Recorder):
 
     def append_spike(self, key: str, value: float) -> None:
         self.spike_buffer["t"].append(float(value))
-        self.spike_buffer["spike_type"].append("pre" if key == "pre_spike_times" else "post")
+        # pre{i}_spike_times -> pre{i}, post_spike_times -> post
+        spike_type = key.removesuffix("_spike_times")
+        self.spike_buffer["spike_type"].append(spike_type)
         self.spikes_written += 1
         if len(self.spike_buffer["t"]) >= self.chunk_rows:
             self._flush_spikes()
@@ -375,15 +479,19 @@ def _build_recorder(
     n = int(p.T / p.dt)
     rec_step = max(1, int(p.record_every / p.dt))
     expected_rows = n // rec_step + 2
+    ser = series_keys(p.n_pre)
+    spk = spike_keys(p.n_pre)
 
     recorders: list[Recorder] = []
     if hdf5_path:
-        recorders.append(HDF5Recorder(hdf5_path, expected_rows=expected_rows, chunk_rows=chunk_rows, params=p))
+        recorders.append(HDF5Recorder(hdf5_path, expected_rows=expected_rows, chunk_rows=chunk_rows,
+                                      params=p, ser_keys=ser, spk_keys=spk))
     if parquet_path:
-        recorders.append(ParquetRecorder(parquet_path, chunk_rows=chunk_rows, params=p))
+        recorders.append(ParquetRecorder(parquet_path, chunk_rows=chunk_rows, params=p,
+                                         ser_keys=ser, spk_keys=spk))
 
     if not recorders:
-        return MemoryRecorder(expected_rows)
+        return MemoryRecorder(expected_rows, ser_keys=ser, spk_keys=spk)
     if len(recorders) == 1:
         return recorders[0]
     return MultiRecorder(recorders)
@@ -468,7 +576,7 @@ def _compute_reward(
     if sig == "target_rate":
         target = max(_compute_target_r_post(p, r_pre), 0.0)
         return -(r_post - target) ** 2
-    elif sig == "biofeedback":
+    elif sig in ("biofeedback", "contingent"):
         return reward_pulse
     else:
         raise ValueError(f"Unknown reward_signal: {p.reward_signal!r}")
@@ -509,18 +617,21 @@ def _compute_modulation(
         raise ValueError(f"Unknown neuromod_type: {p.neuromod_type!r}")
 
 
-def _pack_state(
-    V: float,
-    I_s: float,
-    x_pre: float,
-    y_post: float,
-    E: float,
-    r_pre: float,
-    r_post: float,
-    R_bar: float,
-    w: float,
-) -> np.ndarray:
-    return np.array([V, I_s, x_pre, y_post, E, r_pre, r_post, R_bar, w], dtype=np.float64)
+def _pack_state(p: Params) -> np.ndarray:
+    """Build initial state vector from Params."""
+    n = p.n_pre
+    y = np.zeros(n_state(n), dtype=np.float64)
+    y[V_IDX] = p.V0
+    y[Y_POST_IDX] = p.y_post0
+    y[R_POST_IDX] = p.r_post0
+    y[RBAR_IDX] = p.R_bar0
+    for i in range(n):
+        y[_I_s_idx(i)] = p.I_s0[i]
+        y[_X_pre_idx(i)] = p.x_pre0[i]
+        y[_E_idx(i)] = p.E0[i]
+        y[_R_pre_idx(i)] = p.r_pre0[i]
+        y[_W_idx(i)] = p.w0[i]
+    return y
 
 
 def _smooth_rhs(
@@ -537,36 +648,50 @@ def _smooth_rhs(
     Spike-triggered jumps (I_s += 1, x_pre += 1, eligibility updates)
     are applied in simulate(), not here.  This function handles only the
     exponential-decay and coupling terms that are smooth in t.
+
+    The membrane voltage is driven by the sum of all weighted synaptic
+    currents.  The same neuromodulator M gates all eligibility traces
+    independently: dw_i/dt = M · E_i.
     """
+    n = p.n_pre
     rhs = np.zeros_like(y)
 
+    # ── Shared postsynaptic state ──
     V = float(y[V_IDX])
-    I_s = float(y[I_S_IDX])
-    x_pre = float(y[X_PRE_IDX])
-    y_post = float(y[Y_POST_IDX])
-    E = float(y[E_IDX])
-    r_pre = float(y[R_PRE_IDX])
+    yp = float(y[Y_POST_IDX])
     r_post = float(y[R_POST_IDX])
     R_bar = float(y[RBAR_IDX])
-    w = float(np.clip(y[W_IDX], 0.0, p.wmax))
 
-    rr_pre = rate_pre if rate_pre is not None else r_pre
+    # ── Reward and modulation (global, uses target synapse rate) ──
+    rr_pre = rate_pre if rate_pre is not None else float(y[_R_pre_idx(0)])
     rr_post = rate_post if rate_post is not None else r_post
     R = _compute_reward(p, rr_pre, rr_post, reward_pulse=reward_pulse)
     M, rbar_target = _compute_modulation(p, R, R_bar, rr_post)
 
-    # LIF membrane: τ_m · dV/dt = -(V - E_L) + R_m · w · I_s
+    # LIF membrane: τ_m · dV/dt = -(V - E_L) + R_m · Σ w_i · I_s_i
     if voltage_active:
-        rhs[V_IDX] = (-(V - p.E_L) + p.R_m * w * I_s) / p.tau_m
+        I_total = 0.0
+        for i in range(n):
+            wi = float(np.clip(y[_W_idx(i)], 0.0, p.wmax))
+            I_total += wi * float(y[_I_s_idx(i)])
+        rhs[V_IDX] = (-(V - p.E_L) + p.R_m * I_total) / p.tau_m
 
-    rhs[I_S_IDX] = -I_s / p.tau_s               # Synaptic current decay
-    rhs[X_PRE_IDX] = -x_pre / p.tau_plus         # STDP pre-trace decay
-    rhs[Y_POST_IDX] = -y_post / p.tau_minus      # STDP post-trace decay
-    rhs[E_IDX] = -E / p.tau_e                    # Eligibility decay
-    rhs[R_PRE_IDX] = -r_pre / p.tau_r            # Pre rate-trace decay
-    rhs[R_POST_IDX] = -r_post / p.tau_r          # Post rate-trace decay
-    rhs[RBAR_IDX] = (-R_bar + rbar_target) / p.tau_Rbar  # Baseline tracks target
-    rhs[W_IDX] = M * E                           # Three-factor rule: dw/dt = M · E
+    # ── Shared traces ──
+    rhs[Y_POST_IDX] = -yp / p.tau_minus
+    rhs[R_POST_IDX] = -r_post / p.tau_r
+    rhs[RBAR_IDX] = (-R_bar + rbar_target) / p.tau_Rbar
+
+    # ── Per-synapse ──
+    for i in range(n):
+        I_s = float(y[_I_s_idx(i)])
+        x = float(y[_X_pre_idx(i)])
+        E = float(y[_E_idx(i)])
+        r = float(y[_R_pre_idx(i)])
+        rhs[_I_s_idx(i)] = -I_s / p.tau_s
+        rhs[_X_pre_idx(i)] = -x / p.tau_plus
+        rhs[_E_idx(i)] = -E / p.tau_e
+        rhs[_R_pre_idx(i)] = -r / p.tau_r
+        rhs[_W_idx(i)] = M * E
 
     return rhs
 
@@ -605,7 +730,9 @@ def _advance_state(
     else:
         raise ValueError(f"Unknown integration method: {method!r}")
 
-    out[W_IDX] = float(np.clip(out[W_IDX], 0.0, p.wmax))
+    for i in range(p.n_pre):
+        wi = _W_idx(i)
+        out[wi] = float(np.clip(out[wi], 0.0, p.wmax))
     if not voltage_active:
         out[V_IDX] = p.V_reset
     return out
@@ -630,34 +757,39 @@ def _row_from_state(
     y: np.ndarray,
     p: Params,
     *,
-    pre_spike: int,
+    pre_spikes: list[int],
     post_spike: int,
     is_refractory: int,
     rate_pre: float | None = None,
     rate_post: float | None = None,
     reward_pulse: float = 0.0,
 ) -> dict[str, float]:
-    rr_pre = rate_pre if rate_pre is not None else float(y[R_PRE_IDX])
+    n = p.n_pre
+    rr_pre = rate_pre if rate_pre is not None else float(y[_R_pre_idx(0)])
     rr_post = rate_post if rate_post is not None else float(y[R_POST_IDX])
     R = _compute_reward(p, rr_pre, rr_post, reward_pulse=reward_pulse)
     M, _ = _compute_modulation(p, R, float(y[RBAR_IDX]), rr_post)
-    return {
-        "t": t,
-        "V": float(y[V_IDX]),
-        "w": float(y[W_IDX]),
-        "I_s": float(y[I_S_IDX]),
-        "x_pre": float(y[X_PRE_IDX]),
-        "y_post": float(y[Y_POST_IDX]),
-        "E": float(y[E_IDX]),
-        "r_pre": rr_pre,
-        "r_post": rr_post,
-        "R": float(R),
-        "R_bar": float(y[RBAR_IDX]),
-        "M": float(M),
-        "pre_spike_bin": int(pre_spike),
-        "post_spike_bin": int(post_spike),
-        "is_refractory": int(is_refractory),
-    }
+    row: dict[str, float] = {"t": t, "V": float(y[V_IDX])}
+    for i in range(n):
+        row[f"w{i+1}"] = float(y[_W_idx(i)])
+    for i in range(n):
+        row[f"I_s{i+1}"] = float(y[_I_s_idx(i)])
+    for i in range(n):
+        row[f"x_pre{i+1}"] = float(y[_X_pre_idx(i)])
+    row["y_post"] = float(y[Y_POST_IDX])
+    for i in range(n):
+        row[f"E{i+1}"] = float(y[_E_idx(i)])
+    for i in range(n):
+        row[f"r_pre{i+1}"] = float(y[_R_pre_idx(i)])
+    row["r_post"] = rr_post
+    row["R"] = float(R)
+    row["R_bar"] = float(y[RBAR_IDX])
+    row["M"] = float(M)
+    for i in range(n):
+        row[f"pre{i+1}_spike_bin"] = int(pre_spikes[i])
+    row["post_spike_bin"] = int(post_spike)
+    row["is_refractory"] = int(is_refractory)
+    return row
 
 
 def simulate(
@@ -666,12 +798,15 @@ def simulate(
     parquet_path: str | None = None,
     chunk_rows: int = 100_000,
 ):
-    """Run the neuromodulated STDP simulation.
+    """Run the N-pre → 1-post neuromodulated STDP simulation.
 
     Hybrid event-driven / continuous scheme:
     - Smooth dynamics integrated by Euler or RK4 (_advance_state)
     - Spike events (pre/post) apply instantaneous jumps to traces
     - RK4 path uses threshold-crossing interpolation to split timestep
+
+    Synapse 0 is the "target" (reward-paired) synapse used for contingent
+    reward coincidence detection.
     """
     method = p.method.lower()
     if method not in {"euler", "rk4"}:
@@ -680,95 +815,109 @@ def simulate(
     if p.rate_mode not in {"exp", "window"}:
         raise ValueError("Params.rate_mode must be either 'exp' or 'window'.")
 
-    n = int(p.T / p.dt)
-    period_steps = max(1, round(1.0 / (p.r_pre_rate * p.dt)))
+    n_pre = p.n_pre
+    n_steps = int(p.T / p.dt)
     rec_step = max(1, int(p.record_every / p.dt))
 
-    y = _pack_state(
-        p.V0,
-        p.I_s0,
-        p.x_pre0,
-        p.y_post0,
-        p.E0,
-        p.r_pre0,
-        p.r_post0,
-        p.R_bar0,
-        p.w0,
-    )
+    # ── Spike generation ──────────────────────────────────────
+    rng = np.random.default_rng(p.seed)
+    probs = [r * p.dt for r in p.r_pre_rates]
+    if not p.poisson:
+        periods = [max(1, round(1.0 / (r * p.dt))) if r > 0 else 0
+                   for r in p.r_pre_rates]
+
+    y = _pack_state(p)
     ref_remaining = p.ref_remaining0
 
-    pre_spike_buf: deque[float] = deque()
+    pre_spike_bufs: list[deque[float]] = [deque() for _ in range(n_pre)]
     post_spike_buf: deque[float] = deque()
-    win_r_pre = 0.0
+    win_r_pre: list[float] = [0.0] * n_pre
     win_r_post = 0.0
 
-    # ── Biofeedback reward state ──────────────────────────────
-    # d_reward is a decaying pulse: dd/dt = -d/tau.  Post-spikes schedule
-    # a reward delivery at t + reward_delay; when that time arrives,
-    # d_reward += reward_amount.  Treated as constant within each ODE step.
+    # ── Reward delivery state ─────────────────────────────────
     d_reward = 0.0
     reward_schedule: deque[float] = deque()
-    use_biofeedback = p.reward_signal == "biofeedback"
+    use_reward_pulse = p.reward_signal in ("biofeedback", "contingent")
+
+    # ── Contingent: track recent target-synapse spike times ───
+    recent_target_times: deque[float] = deque()
 
     recorder = _build_recorder(p, hdf5_path=hdf5_path, parquet_path=parquet_path, chunk_rows=chunk_rows)
 
-    for step in range(n):
+    for step in tqdm(range(n_steps), desc="Simulating", unit="step", mininterval=0.5):
         t = step * p.dt
 
-        # ── Biofeedback: deliver scheduled rewards and decay pulse ──
-        if use_biofeedback:
+        # ── Deliver scheduled rewards and decay pulse ─────────
+        if use_reward_pulse:
             while reward_schedule and reward_schedule[0] <= t:
                 reward_schedule.popleft()
                 d_reward += p.reward_amount
             d_reward += p.dt * (-d_reward / p.reward_tau)
 
-        pre_spike = 1 if (step % period_steps == 0) else 0
-        if pre_spike:
-            recorder.append_spike("pre_spike_times", t)
-            y[I_S_IDX] += 1.0
-            y[X_PRE_IDX] += 1.0
-            y[R_PRE_IDX] += 1.0
-            # LTD eligibility: pre-after-post depresses (multiplicative w bound)
-            y[E_IDX] -= p.eta_minus * y[W_IDX] * y[Y_POST_IDX]
-            if use_window:
-                pre_spike_buf.append(t)
+        # ── Pre-synaptic spikes ───────────────────────────────
+        pre_spikes = [0] * n_pre
+        for i in range(n_pre):
+            if p.poisson:
+                pre_spikes[i] = 1 if rng.random() < probs[i] else 0
+            else:
+                pre_spikes[i] = 1 if (periods[i] > 0 and step % periods[i] == 0) else 0
+
+        for i in range(n_pre):
+            if pre_spikes[i]:
+                recorder.append_spike(f"pre{i+1}_spike_times", t)
+                y[_I_s_idx(i)] += 1.0
+                y[_X_pre_idx(i)] += 1.0
+                y[_R_pre_idx(i)] += 1.0
+                y[_E_idx(i)] -= p.eta_minus * y[_W_idx(i)] * y[Y_POST_IDX]
+                if use_window:
+                    pre_spike_bufs[i].append(t)
+                if p.reward_signal == "contingent" and i == 0:
+                    recent_target_times.append(t)
 
         post_spike = 0
         is_refractory = 1 if ref_remaining > 0.0 else 0
 
         if use_window:
             cutoff = t - p.rate_window
-            while pre_spike_buf and pre_spike_buf[0] < cutoff:
-                pre_spike_buf.popleft()
+            for i in range(n_pre):
+                while pre_spike_bufs[i] and pre_spike_bufs[i][0] < cutoff:
+                    pre_spike_bufs[i].popleft()
+                win_r_pre[i] = len(pre_spike_bufs[i]) / p.rate_window
             while post_spike_buf and post_spike_buf[0] < cutoff:
                 post_spike_buf.popleft()
-            win_r_pre = len(pre_spike_buf) / p.rate_window
             win_r_post = len(post_spike_buf) / p.rate_window
 
-        rp = win_r_pre if use_window else None
+        rp = win_r_pre[0] if use_window else None
         ro = win_r_post if use_window else None
 
+        # ── Prune old target times for contingent reward ──────
+        if p.reward_signal == "contingent":
+            cutoff_c = t - p.coincidence_window
+            while recent_target_times and recent_target_times[0] < cutoff_c:
+                recent_target_times.popleft()
+
         if method == "euler":
-            # Staggered (semi-implicit) Euler: pre-synaptic variables are
-            # advanced first, then voltage is computed with the updated I_s.
-            # This ordering differs from the simultaneous RHS evaluation
-            # used in _smooth_rhs / _advance_state.
             V = float(y[V_IDX])
-            I_s = float(y[I_S_IDX])
-            x_pre = float(y[X_PRE_IDX])
-            y_post = float(y[Y_POST_IDX])
-            E = float(y[E_IDX])
-            r_pre = float(y[R_PRE_IDX])
+            yp = float(y[Y_POST_IDX])
             r_post = float(y[R_POST_IDX])
             R_bar = float(y[RBAR_IDX])
-            w = float(y[W_IDX])
 
-            I_s += p.dt * (-I_s / p.tau_s)
-            x_pre += p.dt * (-x_pre / p.tau_plus)
-            r_pre += p.dt * (-r_pre / p.tau_r)
+            # Unpack per-synapse into local arrays
+            I_s = [float(y[_I_s_idx(i)]) for i in range(n_pre)]
+            x = [float(y[_X_pre_idx(i)]) for i in range(n_pre)]
+            E = [float(y[_E_idx(i)]) for i in range(n_pre)]
+            r = [float(y[_R_pre_idx(i)]) for i in range(n_pre)]
+            w = [float(y[_W_idx(i)]) for i in range(n_pre)]
+
+            # Decay per-synapse variables
+            for i in range(n_pre):
+                I_s[i] += p.dt * (-I_s[i] / p.tau_s)
+                x[i] += p.dt * (-x[i] / p.tau_plus)
+                r[i] += p.dt * (-r[i] / p.tau_r)
 
             if ref_remaining <= 0.0:
-                dV = (p.dt / p.tau_m) * (-(V - p.E_L) + p.R_m * w * I_s)
+                I_total = sum(w[i] * I_s[i] for i in range(n_pre))
+                dV = (p.dt / p.tau_m) * (-(V - p.E_L) + p.R_m * I_total)
                 V_new = V + dV
                 if V < p.theta and V_new >= p.theta:
                     post_spike = 1
@@ -782,37 +931,50 @@ def simulate(
                 V = p.V_reset
 
             if post_spike:
-                y_post += 1.0
+                yp += 1.0
                 r_post += 1.0
-                E += p.eta_plus * (p.wmax - w) * x_pre
-                if use_biofeedback:
+                for i in range(n_pre):
+                    E[i] += p.eta_plus * (p.wmax - w[i]) * x[i]
+                if p.reward_signal == "biofeedback":
+                    reward_schedule.append(t + p.reward_delay)
+                elif p.reward_signal == "contingent" and recent_target_times:
                     reward_schedule.append(t + p.reward_delay)
                 if use_window:
                     post_spike_buf.append(t)
                     win_r_post = len(post_spike_buf) / p.rate_window
-                    rp = win_r_pre
+                    rp = win_r_pre[0]
                     ro = win_r_post
 
-            y_post += p.dt * (-y_post / p.tau_minus)
+            yp += p.dt * (-yp / p.tau_minus)
             r_post += p.dt * (-r_post / p.tau_r)
-            E += p.dt * (-E / p.tau_e)
+            for i in range(n_pre):
+                E[i] += p.dt * (-E[i] / p.tau_e)
 
-            rew_pre: float = rp if use_window else r_pre  # type: ignore[assignment]
+            rew_pre: float = rp if use_window else r[0]  # type: ignore[assignment]
             rew_post: float = ro if use_window else r_post  # type: ignore[assignment]
             R = _compute_reward(p, rew_pre, rew_post, reward_pulse=d_reward)
             _, rbar_target = _compute_modulation(p, R, R_bar, rew_post)
             R_bar += (p.dt / p.tau_Rbar) * (-R_bar + rbar_target)
             R = _compute_reward(p, rew_pre, rew_post, reward_pulse=d_reward)
             M, _ = _compute_modulation(p, R, R_bar, rew_post)
-            w += p.dt * M * E
-            w = min(p.wmax, max(0.0, w))
+            for i in range(n_pre):
+                w[i] += p.dt * M * E[i]
+                w[i] = min(p.wmax, max(0.0, w[i]))
 
-            y = _pack_state(V, I_s, x_pre, y_post, E, r_pre, r_post, R_bar, w)
+            # Pack back into state vector
+            y[V_IDX] = V
+            y[Y_POST_IDX] = yp
+            y[R_POST_IDX] = r_post
+            y[RBAR_IDX] = R_bar
+            for i in range(n_pre):
+                y[_I_s_idx(i)] = I_s[i]
+                y[_X_pre_idx(i)] = x[i]
+                y[_E_idx(i)] = E[i]
+                y[_R_pre_idx(i)] = r[i]
+                y[_W_idx(i)] = w[i]
 
         else:
-            # RK4 with threshold-crossing detection: advance full step,
-            # check for upward crossing via linear interpolation, and if
-            # detected split the step at the crossing point.
+            # RK4 with threshold-crossing detection
             if ref_remaining <= 0.0:
                 v0 = float(y[V_IDX])
                 y_trial = _advance_state(y, p.dt, p, method="rk4", voltage_active=True, rate_pre=rp, rate_post=ro, reward_pulse=d_reward)
@@ -832,9 +994,12 @@ def simulate(
                     y_mid[V_IDX] = p.V_reset
                     y_mid[Y_POST_IDX] += 1.0
                     y_mid[R_POST_IDX] += 1.0
-                    y_mid[E_IDX] += p.eta_plus * (p.wmax - y_mid[W_IDX]) * y_mid[X_PRE_IDX]
+                    for i in range(n_pre):
+                        y_mid[_E_idx(i)] += p.eta_plus * (p.wmax - y_mid[_W_idx(i)]) * y_mid[_X_pre_idx(i)]
 
-                    if use_biofeedback:
+                    if p.reward_signal == "biofeedback":
+                        reward_schedule.append(spike_t + p.reward_delay)
+                    elif p.reward_signal == "contingent" and recent_target_times:
                         reward_schedule.append(spike_t + p.reward_delay)
 
                     if use_window:
@@ -855,7 +1020,7 @@ def simulate(
                     t,
                     y,
                     p,
-                    pre_spike=pre_spike,
+                    pre_spikes=pre_spikes,
                     post_spike=post_spike,
                     is_refractory=is_refractory,
                     rate_pre=rp,
@@ -936,12 +1101,17 @@ def read_spike_times_parquet(path: str | Path, x0: float | None = None, x1: floa
 
     spike_path = spike_parquet_path(path)
     if not spike_path.exists():
-        return {"pre_spike_times": np.array([]), "post_spike_times": np.array([])}
+        return {k: np.array([]) for k in SPIKE_KEYS}
 
     spikes = pl.read_parquet(str(spike_path))
-    pre = spikes.filter(pl.col("spike_type") == "pre").get_column("t").to_numpy()
-    post = spikes.filter(pl.col("spike_type") == "post").get_column("t").to_numpy()
-    return _filter_spike_times({"pre_spike_times": pre, "post_spike_times": post}, x0=x0, x1=x1)
+    result: dict[str, np.ndarray] = {}
+    for spike_type in spikes.get_column("spike_type").unique().to_list():
+        times = spikes.filter(pl.col("spike_type") == spike_type).get_column("t").to_numpy()
+        result[f"{spike_type}_spike_times"] = times
+    # Ensure post is always present
+    if "post_spike_times" not in result:
+        result["post_spike_times"] = np.array([])
+    return _filter_spike_times(result, x0=x0, x1=x1)
 
 
 def _downsample_memory_rec(rec: dict[str, np.ndarray], max_points: int) -> dict[str, np.ndarray]:
@@ -1226,75 +1396,96 @@ def write_plotly_html(fig, output_html: str) -> str:
 
 
 def plot_all_in_one_figure_matplotlib(rec, p: Params):
+    n = p.n_pre
     t = rec["t"]
-    _, axs = plt.subplots(12, 1, figsize=(19, 20), sharex=True)
+    n_panels = 7 + (1 if n > 0 else 0) + (1 if n > 0 else 0) + 1  # spikes, V, E, r_pre, r_post, R, R_bar, M, w, xlabel
+    _, axs = plt.subplots(n_panels, 1, figsize=(19, 2 * n_panels), sharex=True)
 
-    axs[0].eventplot([rec["pre_spike_times"], rec["post_spike_times"]], lineoffsets=[1, 0], linelengths=0.8)
-    axs[0].set_yticks([0, 1])
-    axs[0].set_yticklabels(["post", "pre"])
+    # Spike raster
+    spike_data = [rec.get(f"pre{i+1}_spike_times", np.array([])) for i in range(n)] + [rec["post_spike_times"]]
+    labels = [f"pre{i+1}" for i in range(n)] + ["post"]
+    axs[0].eventplot(spike_data, lineoffsets=list(range(len(labels) - 1, -1, -1)), linelengths=0.8)
+    axs[0].set_yticks(list(range(len(labels))))
+    axs[0].set_yticklabels(labels[::-1])
     axs[0].set_title("Spike times")
 
-    axs[1].plot(t, rec["V"])
+    dot = dict(marker=".", markersize=1, linestyle="none")
+
+    axs[1].plot(t, rec["V"], **dot)
     axs[1].axhline(p.theta, linestyle="--", label="theta")
     axs[1].axhline(p.V_reset, linestyle=":", label="V_reset")
     axs[1].legend(loc="upper right")
     axs[1].set_title("Membrane potential V(t)")
 
-    axs[2].plot(t, rec["I_s"])
-    axs[2].set_title("Synaptic current I_s(t)")
+    for i in range(n):
+        label = f"E{i+1}" + (" (target)" if i == 0 and n > 1 else "")
+        axs[2].plot(t, rec[f"E{i+1}"], label=label, **dot)
+    axs[2].legend(loc="upper right")
+    axs[2].set_title("Eligibility traces")
 
-    axs[3].plot(t, rec["x_pre"])
-    axs[3].set_title("STDP pre-trace x_pre(t)")
+    for i in range(n):
+        axs[3].plot(t, rec[f"r_pre{i+1}"], label=f"r_pre{i+1}", **dot)
+    axs[3].legend(loc="upper right")
+    axs[3].set_title("Pre-synaptic firing rates")
 
-    axs[4].plot(t, rec["y_post"])
-    axs[4].set_title("STDP post-trace y_post(t)")
+    axs[4].plot(t, rec["r_post"], **dot)
+    axs[4].set_title("Post-synaptic firing rate r_post(t)")
 
-    axs[5].plot(t, rec["E"])
-    axs[5].set_title("Eligibility trace E(t)")
+    axs[5].plot(t, rec["R"], **dot)
+    axs[5].set_title("Reward R(t)")
 
-    axs[6].plot(t, rec["r_pre"])
-    axs[6].set_title("Pre-synaptic firing rate r_pre(t)")
+    axs[6].plot(t, rec["R_bar"], **dot)
+    axs[6].set_title("Reward baseline R_bar(t)")
 
-    axs[7].plot(t, rec["r_post"])
-    axs[7].plot(t, p.alpha * rec["r_pre"], linestyle="--", label="target")
-    axs[7].legend(loc="upper right")
-    axs[7].set_title("Post-synaptic firing rate r_post(t)")
+    axs[7].plot(t, rec["M"], **dot)
+    axs[7].set_title("Modulation M(t)")
 
-    axs[8].plot(t, rec["R"])
-    axs[8].set_title("Reward R(t)")
+    for i in range(n):
+        label = f"w{i+1}" + (" (target)" if i == 0 and n > 1 else "")
+        axs[8].plot(t, rec[f"w{i+1}"], label=label, **dot)
+    axs[8].legend(loc="upper right")
+    axs[8].set_title("Synaptic weights")
 
-    axs[9].plot(t, rec["R_bar"])
-    axs[9].set_title("Reward baseline R_bar(t)")
-
-    axs[10].plot(t, rec["M"])
-    axs[10].set_title("Modulation M(t)")
-
-    axs[11].plot(t, rec["w"])
-    axs[11].set_title("Synaptic weight w(t)")
-    axs[11].set_xlabel("time (s)")
+    axs[-1].set_xlabel("time (s)")
 
     plt.tight_layout()
     plt.savefig("simulation.png")
     plt.show()
 
 
-ALL_PLOT_VARIABLES = ["V", "I_s", "x_pre", "y_post", "E", "r_pre", "r_post", "R", "R_bar", "M", "w"]
+def all_plot_variables(n_pre: int) -> list[str]:
+    v = ["V"]
+    v += [f"I_s{i+1}" for i in range(n_pre)]
+    v += [f"x_pre{i+1}" for i in range(n_pre)]
+    v.append("y_post")
+    v += [f"E{i+1}" for i in range(n_pre)]
+    v += [f"r_pre{i+1}" for i in range(n_pre)]
+    v.append("r_post")
+    v += ["R", "R_bar", "M"]
+    v += [f"w{i+1}" for i in range(n_pre)]
+    return v
 
-VARIABLE_TITLES = {
-    "V": "Membrane potential V",
-    "I_s": "Synaptic current I_s",
-    "x_pre": "STDP pre-trace x_pre",
-    "y_post": "STDP post-trace y_post",
-    "E": "Eligibility trace E",
-    "r_pre": "Pre-synaptic firing rate r_pre",
-    "r_post": "Post-synaptic firing rate r_post",
-    "R": "Reward R",
-    "R_bar": "Reward baseline R_bar",
-    "M": "Modulation M",
-    "w": "Synaptic weight w",
-}
 
-MARKER_MODE_VARIABLES = {"E", "w"}
+def variable_titles(n_pre: int) -> dict[str, str]:
+    titles: dict[str, str] = {"V": "Membrane potential V"}
+    for i in range(n_pre):
+        label = "target" if i == 0 else "distractor" if n_pre > 1 else ""
+        suffix = f" ({label})" if label else ""
+        titles[f"I_s{i+1}"] = f"Synaptic current I_s{i+1}{suffix}"
+        titles[f"x_pre{i+1}"] = f"STDP pre-trace x_pre{i+1}"
+        titles[f"E{i+1}"] = f"Eligibility trace E{i+1}{suffix}"
+        titles[f"r_pre{i+1}"] = f"Pre{i+1} firing rate r_pre{i+1}"
+        titles[f"w{i+1}"] = f"Weight w{i+1}{suffix}"
+    titles["y_post"] = "STDP post-trace y_post"
+    titles["r_post"] = "Post-synaptic firing rate r_post"
+    titles["R"] = "Reward R"
+    titles["R_bar"] = "Reward baseline R_bar"
+    titles["M"] = "Modulation M"
+    return titles
+
+
+ALL_PLOT_VARIABLES = all_plot_variables(2)
+VARIABLE_TITLES = variable_titles(2)
 
 
 def build_all_in_one_plotly_figure(
@@ -1308,14 +1499,18 @@ def build_all_in_one_plotly_figure(
     if go is None or make_subplots is None:
         raise ImportError("plotly is required for interactive plotting. Install it with `uv add plotly`.")
 
-    plot_vars = variables if variables is not None else ALL_PLOT_VARIABLES
+    n_pre = p.n_pre
+    apv = all_plot_variables(n_pre)
+    vtitles = variable_titles(n_pre)
+
+    plot_vars = variables if variables is not None else apv
     show_spikes = variables is None
     n_rows = len(plot_vars) + (1 if show_spikes else 0)
 
     needed_columns = set(plot_vars)
     if "r_post" in needed_columns:
-        needed_columns.add("r_pre")
-    columns = ["t"] + [v for v in ALL_PLOT_VARIABLES if v in needed_columns]
+        needed_columns.add("r_pre1")
+    columns = ["t"] + [v for v in apv if v in needed_columns]
 
     frame, spikes = load_time_series_frame(rec_or_path, columns=columns, max_points=max_points, x0=x0, x1=x1)
     arrays = {col: _plotly_values(frame[col].to_numpy()) for col in columns}
@@ -1324,7 +1519,7 @@ def build_all_in_one_plotly_figure(
     titles = []
     if show_spikes:
         titles.append("Spike times")
-    titles.extend(VARIABLE_TITLES[v] for v in plot_vars)
+    titles.extend(vtitles.get(v, v) for v in plot_vars)
 
     fig = make_subplots(
         rows=n_rows,
@@ -1336,8 +1531,11 @@ def build_all_in_one_plotly_figure(
 
     row = 1
     if show_spikes:
-        for label, key, y_base in [("pre", "pre_spike_times", 1.0), ("post", "post_spike_times", 0.0)]:
-            times = spikes[key]
+        # Build spike raster entries dynamically
+        spike_entries = [(f"pre{i+1}", f"pre{i+1}_spike_times", float(n_pre - i)) for i in range(n_pre)]
+        spike_entries.append(("post", "post_spike_times", 0.0))
+        for label, key, y_base in spike_entries:
+            times = spikes.get(key, np.array([]))
             n_spikes = len(times)
             if n_spikes > 0:
                 xs = np.empty(3 * n_spikes)
@@ -1365,13 +1563,12 @@ def build_all_in_one_plotly_figure(
         row += 1
 
     for var in plot_vars:
-        mode = "markers" if var in MARKER_MODE_VARIABLES else "lines"
-        fig.add_trace(go.Scattergl(x=t, y=arrays[var], name=var, mode=mode), row=row, col=1)
+        fig.add_trace(go.Scattergl(x=t, y=arrays[var], name=var, mode="markers", marker={"size": 2}), row=row, col=1)
         if var == "V":
             fig.add_hline(y=p.theta, line_dash="dash", row=row, col=1)  # type: ignore[arg-type]
             fig.add_hline(y=p.V_reset, line_dash="dot", row=row, col=1)  # type: ignore[arg-type]
-        elif var == "r_post":
-            fig.add_trace(go.Scattergl(x=t, y=_plotly_values(p.alpha * np.asarray(frame["r_pre"].to_numpy())), name="target"), row=row, col=1)
+        elif var == "r_post" and "r_pre1" in needed_columns:
+            fig.add_trace(go.Scattergl(x=t, y=_plotly_values(p.alpha * np.asarray(frame["r_pre1"].to_numpy())), name="target"), row=row, col=1)
         row += 1
 
     fig.update_layout(height=max(400, 200 * n_rows), width=1400, title="Neuromodulated STDP simulation", showlegend=True)
@@ -1555,20 +1752,22 @@ app = typer.Typer(help="Simulate neuromodulated STDP with optional HDF5 and Parq
 @app.command()
 def main(
     hdf5: Annotated[str | None, typer.Option(help="Write recorded state to an HDF5 file.")] = None,
-    parquet: Annotated[str | None, typer.Option(help="Write recorded state to a streamed Parquet file.")] = "sim.parquet",
+    parquet: Annotated[str | None, typer.Option(help="Write recorded state to a Parquet file (overrides cache naming).")] = None,
     plot_backend: Annotated[str, typer.Option(help="Plot backend to use.")] = "server",
     plot_html: Annotated[str, typer.Option(help="Output HTML file for plotly backend.")] = "simulation.html",
     chunk_rows: Annotated[int, typer.Option(help="Row chunk size for streaming output.")] = 100_000,
     max_plot_points: Annotated[int, typer.Option(help="Max data points for plotting.")] = 40_000,
     host: Annotated[str, typer.Option(help="Host for server backend.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Port for server backend.")] = 8050,
-    method: Annotated[str, typer.Option(help="Integrator for smooth dynamics.")] = "euler",
+    method: Annotated[str, typer.Option(help="Integrator for smooth dynamics.")] = "rk4",
     rate_mode: Annotated[str, typer.Option(help="Firing-rate mode: 'exp' (exponential trace) or 'window' (spike count).")] = "exp",
     rate_window: Annotated[float, typer.Option(help="Window duration in seconds for 'window' rate mode.")] = 0.5,
     neuromod_type: Annotated[str, typer.Option(help="Neuromodulator role (Frémaux Eq.14): covariance, gated, surprise, constant.")] = "covariance",
-    reward_signal: Annotated[str, typer.Option(help="Reward signal: target_rate, biofeedback.")] = "target_rate",
-    reuse_existing: Annotated[bool, typer.Option(help="Reuse an existing HDF5/Parquet file instead of rerunning the simulation.")] = False,
-    variables: Annotated[list[str] | None, typer.Option(help="Variables to plot (e.g. --variables E --variables w). Defaults to all.")] = None,
+    reward_signal: Annotated[str, typer.Option(help="Reward signal: target_rate, biofeedback, contingent.")] = "target_rate",
+    n_pre: Annotated[int, typer.Option(help="Number of pre-synaptic neurons.")] = 1,
+    variables: Annotated[list[str] | None, typer.Option(help="Variables to plot (e.g. --variables E1 --variables w1). Defaults to all.")] = None,
+    no_cache: Annotated[bool, typer.Option("--no-cache", help="Force rerun, ignoring cached results.")] = False,
+    cache_dir: Annotated[str, typer.Option(help="Directory for simulation cache.")] = "output",
 ):
     if plot_backend not in {"matplotlib", "plotly", "server"}:
         raise typer.BadParameter(f"plot-backend must be one of: matplotlib, plotly, server (got {plot_backend!r})")
@@ -1578,44 +1777,75 @@ def main(
         raise typer.BadParameter(f"rate-mode must be one of: exp, window (got {rate_mode!r})")
     if neuromod_type not in {"covariance", "gated", "surprise", "constant"}:
         raise typer.BadParameter(f"neuromod-type must be one of: covariance, gated, surprise, constant (got {neuromod_type!r})")
-    if reward_signal not in {"target_rate", "biofeedback"}:
-        raise typer.BadParameter(f"reward-signal must be one of: target_rate, biofeedback (got {reward_signal!r})")
-    if variables is not None:
-        bad = [v for v in variables if v not in ALL_PLOT_VARIABLES]
-        if bad:
-            raise typer.BadParameter(f"Unknown variables: {bad}. Choose from: {ALL_PLOT_VARIABLES}")
+    if reward_signal not in {"target_rate", "biofeedback", "contingent"}:
+        raise typer.BadParameter(f"reward-signal must be one of: target_rate, biofeedback, contingent (got {reward_signal!r})")
+    if n_pre < 1:
+        raise typer.BadParameter(f"n-pre must be >= 1 (got {n_pre})")
 
-    # params = Params(T=2000, method="rk4")
+    apv = all_plot_variables(n_pre)
+    if variables is not None:
+        bad = [v for v in variables if v not in apv]
+        if bad:
+            raise typer.BadParameter(f"Unknown variables: {bad}. Choose from: {apv}")
+
     params = Params(
-        T=10,
-        method="rk4",
+        T=100,
+        n_pre=n_pre,
+        r_pre_rates=20.0,
+        w0=2.0,
+        method=method,
         rate_mode=rate_mode,
         rate_window=rate_window,
         neuromod_type=neuromod_type,
         reward_signal=reward_signal,
-        V0=-62.39967779660166,
-        I_s0=4.5401991625251883e-05,
-        x_pre0=0.08942548983512577,
-        y_post0=0.008716035584680641,
-        E0=0.0030283801939102665,
-        r_pre0=9.508331944774904,
-        r_post0=4.562177684144224,
-        R_bar0=-0.08942311829959347,
-        w0=1.8925826247554693,
     )
 
-    if plot_backend == "server" and not (parquet or hdf5):
+    # ── Cache lookup (before preview so user sees status) ─────
+    from neuro.cache import params_hash, lookup_run, cached_simulate
+    use_cache = not parquet and not hdf5
+    cache_hit = None
+    if use_cache and not no_cache:
+        hash_hex = params_hash(params)
+        cache_hit = lookup_run(Path(cache_dir) / "runs.db", hash_hex)
+    elif use_cache:
+        hash_hex = params_hash(params)
+
+    n_steps = int(params.T / params.dt)
+    rates_str = ", ".join(f"{r} Hz" for r in params.r_pre_rates)
+    weights_str = ", ".join(str(w) for w in params.w0)
+    typer.echo("\n── Simulation Parameters ──")
+    typer.echo(f"  Duration:       {params.T} s  ({n_steps:,} steps, dt={params.dt})")
+    typer.echo(f"  Integrator:     {method}")
+    typer.echo(f"  Neuromod type:  {neuromod_type}")
+    typer.echo(f"  Reward signal:  {reward_signal}")
+    typer.echo(f"  Rate mode:      {rate_mode}" + (f" (window={rate_window} s)" if rate_mode == "window" else ""))
+    typer.echo(f"  Pre neurons:    {n_pre}")
+    typer.echo(f"  Pre rates:      [{rates_str}]  ({'Poisson' if params.poisson else 'deterministic'})")
+    typer.echo(f"  Weights:        [{weights_str}]  (wmax={params.wmax})")
+    if cache_hit:
+        typer.echo(f"  Cache:          HIT — reusing run from {cache_hit['created_at']}")
+        typer.echo(f"  Output:         {cache_hit['parquet_path']}")
+    elif use_cache and no_cache:
+        short = hash_hex[:12]
+        typer.echo(f"  Cache:          FORCED RERUN — will save to {cache_dir}/{short}.parquet")
+    elif use_cache:
+        short = hash_hex[:12]
+        typer.echo(f"  Cache:          MISS — will save to {cache_dir}/{short}.parquet")
+    else:
+        typer.echo(f"  Output:         {parquet or hdf5 or 'in-memory'}")
+    typer.echo(f"  Plot backend:   {plot_backend}")
+    typer.echo("")
+    if not typer.confirm("Proceed?", default=True):
+        raise typer.Abort()
+
+    if not use_cache and plot_backend == "server" and not (parquet or hdf5):
         raise typer.BadParameter("The server backend requires --parquet or --hdf5 so zoom requests can be resampled from disk.")
 
-    existing_server_source = None
-    if plot_backend == "server" and reuse_existing:
-        for candidate in (parquet, hdf5):
-            if candidate and Path(candidate).exists():
-                existing_server_source = candidate
-                break
-
     rec = None
-    if existing_server_source is None:
+    if use_cache:
+        rec = cached_simulate(params, cache_dir=Path(cache_dir), chunk_rows=chunk_rows, force=no_cache)
+        parquet = rec.get("parquet_path", parquet)
+    else:
         rec = simulate(
             params,
             hdf5_path=hdf5,
@@ -1629,7 +1859,7 @@ def main(
         else:
             raise typer.BadParameter("Matplotlib plotting requires in-memory records. Use Plotly for HDF5/Parquet-backed runs.")
     elif plot_backend == "server":
-        plot_source = existing_server_source or parquet or hdf5
+        plot_source = parquet or hdf5
         assert plot_source is not None, "No plot source available for server mode"
         serve_zoom_adaptive_plot(
             plot_source,
