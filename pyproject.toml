@@ -35,5 +35,6 @@ reportUnusedImport = "warning"
 
 [dependency-groups]
 dev = [
+    "marimo>=0.16.0",
     "pytest>=9.0.2",
 ]
