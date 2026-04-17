@@ -6,5 +6,3 @@ use the proof/theorem to rigorously show what window size or time constant you n
 look at claude conversation on research 
 
 expand to N pre-synaptic neurons (currently focused on the 1-pre verified path; N-pre code is preserved in sim.py but not actively developed)
-
-strip plotly + HTTP server visualization code from src/neuro/sim.py (matplotlib is the chosen viz)
