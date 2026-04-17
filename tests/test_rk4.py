@@ -25,8 +25,6 @@ from neuro.sim import (
     N_STATE,
     Params,
     R_POST_IDX,
-    R_PRE1_IDX,
-    R_PRE2_IDX,
     RBAR_IDX,
     V_IDX,
     W1_IDX,
@@ -100,7 +98,6 @@ _REST = dict(
     n_pre=2,
     w0=(1.0, 0.0),
     E0=(0.0, 0.0),
-    r_pre0=(0.0, 0.0),
     r_post0=0.0, R_bar0=0.0,
     V0=-65.0, I_s0=(0.0, 0.0),
     x_pre0=(0.0, 0.0), y_post0=0.0,
@@ -124,8 +121,6 @@ class TestExponentialDecays:
         ("y_post", Y_POST_IDX, "y_post0", None, "tau_minus"),
         ("E1",     E1_IDX,     "E0",     0, "tau_e"),
         ("E2",     E2_IDX,     "E0",     1, "tau_e"),
-        ("r_pre1", R_PRE1_IDX, "r_pre0", 0, "tau_r"),
-        ("r_pre2", R_PRE2_IDX, "r_pre0", 1, "tau_r"),
         ("r_post", R_POST_IDX, "r_post0", None, "tau_r"),
         ("R_bar",  RBAR_IDX,   "R_bar0",  None, "tau_Rbar"),
     ]
@@ -211,7 +206,7 @@ class TestCoupledVoltage:
             I_s0=(0.1, 0.0), w0=(1.0, 0.0),
             E0=(0.0, 0.0),
             x_pre0=(0.0, 0.0), y_post0=0.0,
-            r_pre0=(0.0, 0.0), r_post0=0.0, R_bar0=0.0,
+            r_post0=0.0, R_bar0=0.0,
             r_target=0.0,
         )
 
@@ -305,7 +300,7 @@ class TestConvergenceOrder:
             I_s0=(0.5, 0.0), w0=(2.0, 0.0),
             E0=(0.0, 0.0),
             x_pre0=(0.0, 0.0), y_post0=0.0,
-            r_pre0=(0.0, 0.0), r_post0=0.0, R_bar0=0.0,
+            r_post0=0.0, R_bar0=0.0,
             r_target=0.0,
         )
         T = 0.02
@@ -353,7 +348,7 @@ class TestConvergenceOrder:
             theta=-40.0, I_s0=(0.5, 0.0), w0=(2.0, 0.0),
             E0=(0.0, 0.0),
             x_pre0=(0.0, 0.0), y_post0=0.0,
-            r_pre0=(0.0, 0.0), r_post0=0.0, R_bar0=0.0,
+            r_post0=0.0, R_bar0=0.0,
             r_target=0.0,
         )
         dt = 1e-3
@@ -397,7 +392,7 @@ class TestEdgeCases:
     def test_weight_clamp_lower(self) -> None:
         """Weight should be clamped at 0 even if dw/dt drives it negative."""
         p = Params(n_pre=2, w0=(0.001, 2.0), E0=(1.0, 0.0), R_bar0=100.0,
-                   r_pre0=(0.0, 0.0), r_post0=0.0, r_target=0.0)
+                   r_post0=0.0, r_target=0.0)
         y0 = _make_y0(p)
         result = _advance_state(y0, 0.01, p, method="rk4",
                                 voltage_active=False)
@@ -406,7 +401,7 @@ class TestEdgeCases:
     def test_weight_clamp_upper(self) -> None:
         """Weight should be clamped at wmax."""
         p = Params(n_pre=2, w0=(9.99, 2.0), wmax=10.0, E0=(1.0, 0.0), R_bar0=-100.0,
-                   r_pre0=(0.0, 0.0), r_post0=0.0, r_target=0.0)
+                   r_post0=0.0, r_target=0.0)
         y0 = _make_y0(p)
         result = _advance_state(y0, 0.01, p, method="rk4",
                                 voltage_active=False)
@@ -418,7 +413,7 @@ class TestEdgeCases:
                    I_s0=(0.0, 0.0),
                    x_pre0=(0.0, 0.0), y_post0=0.0,
                    E0=(0.0, 0.0),
-                   r_pre0=(0.0, 0.0), r_post0=0.0,
+                   r_post0=0.0,
                    R_bar0=0.0, w0=(1.0, 0.0), r_target=0.0)
         y0 = _make_y0(p)
         rhs = _smooth_rhs(y0, p, voltage_active=True)

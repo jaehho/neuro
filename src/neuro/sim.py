@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 from collections import deque
 
+from collections.abc import Callable, Iterable
 from tqdm import tqdm
 from dataclasses import asdict, dataclass, field, fields
 from typing import Annotated
@@ -87,12 +88,13 @@ SERIES_KEYS = series_keys(2)
 SPIKE_KEYS = spike_keys(2)
 
 
-# ── State vector layout: 4 shared + n_pre × 5 per-synapse ────────
+# ── State vector layout: 4 shared + n_pre × 4 per-synapse ────────
 # Shared: [V, y_post, r_post, R_bar]
-# Per synapse i: [I_s, x_pre, E, r_pre, w]
+# Per synapse i: [I_s, x_pre, E, w]
+# (r_pre is a constant set by Params.r_pre_rates, not a state variable.)
 
 N_SHARED = 4
-N_PER_SYN = 5
+N_PER_SYN = 4
 
 V_IDX = 0
 Y_POST_IDX = 1
@@ -108,8 +110,7 @@ def _syn_base(i: int) -> int:
 def _I_s_idx(i: int) -> int: return _syn_base(i)
 def _X_pre_idx(i: int) -> int: return _syn_base(i) + 1
 def _E_idx(i: int) -> int: return _syn_base(i) + 2
-def _R_pre_idx(i: int) -> int: return _syn_base(i) + 3
-def _W_idx(i: int) -> int: return _syn_base(i) + 4
+def _W_idx(i: int) -> int: return _syn_base(i) + 3
 
 
 def n_state(n_pre: int) -> int:
@@ -120,12 +121,10 @@ def n_state(n_pre: int) -> int:
 I_S1_IDX = _I_s_idx(0)
 X_PRE1_IDX = _X_pre_idx(0)
 E1_IDX = _E_idx(0)
-R_PRE1_IDX = _R_pre_idx(0)
 W1_IDX = _W_idx(0)
 I_S2_IDX = _I_s_idx(1)
 X_PRE2_IDX = _X_pre_idx(1)
 E2_IDX = _E_idx(1)
-R_PRE2_IDX = _R_pre_idx(1)
 W2_IDX = _W_idx(1)
 N_STATE = n_state(2)
 
@@ -166,9 +165,8 @@ class Params:
     x_pre0: tuple[float, ...] | float = (0.0,)
     y_post0: float = 0.0
 
-    # ── Firing-rate estimation ─────────────────────────────
+    # ── Firing-rate estimation (r_post only; r_pre is constant) ──
     tau_r: float = 0.5        # Exponential rate-trace decay (s)
-    r_pre0: tuple[float, ...] | float = (0.0,)
     r_post0: float = 0.0
 
     # ── Eligibility trace (Frémaux & Gerstner 2016) ───────
@@ -197,7 +195,7 @@ class Params:
     reward_tau: float = 0.2            # Reward pulse decay time constant (s)
     coincidence_window: float = 0.02   # Target→post window for contingent reward (s); 20 ms
 
-    # ── Rate estimation mode ───────────────────────────────
+    # ── Rate estimation mode (applies to r_post only) ──────
     rate_mode: str = "exp"    # "exp" (trace) or "window" (spike count)
     rate_window: float = 0.5  # Window duration for "window" mode (s)
 
@@ -210,7 +208,7 @@ class Params:
     def __post_init__(self):
         n = self.n_pre
         # Broadcast scalars (or wrong-length tuples with uniform values) to length n_pre
-        for attr in ("r_pre_rates", "I_s0", "x_pre0", "r_pre0", "E0", "w0"):
+        for attr in ("r_pre_rates", "I_s0", "x_pre0", "E0", "w0"):
             val = getattr(self, attr)
             if isinstance(val, (int, float)):
                 object.__setattr__(self, attr, tuple(val for _ in range(n)))
@@ -242,10 +240,6 @@ class Params:
     def x_pre1_0(self) -> float: return self.x_pre0[0]
     @property
     def x_pre2_0(self) -> float: return self.x_pre0[1]
-    @property
-    def r_pre1_0(self) -> float: return self.r_pre0[0]
-    @property
-    def r_pre2_0(self) -> float: return self.r_pre0[1]
     @property
     def E1_0(self) -> float: return self.E0[0]
     @property
@@ -629,7 +623,6 @@ def _pack_state(p: Params) -> np.ndarray:
         y[_I_s_idx(i)] = p.I_s0[i]
         y[_X_pre_idx(i)] = p.x_pre0[i]
         y[_E_idx(i)] = p.E0[i]
-        y[_R_pre_idx(i)] = p.r_pre0[i]
         y[_W_idx(i)] = p.w0[i]
     return y
 
@@ -639,7 +632,6 @@ def _smooth_rhs(
     p: Params,
     *,
     voltage_active: bool,
-    rate_pre: float | None = None,
     rate_post: float | None = None,
     reward_pulse: float = 0.0,
 ) -> np.ndarray:
@@ -663,7 +655,7 @@ def _smooth_rhs(
     R_bar = float(y[RBAR_IDX])
 
     # ── Reward and modulation (global, uses target synapse rate) ──
-    rr_pre = rate_pre if rate_pre is not None else float(y[_R_pre_idx(0)])
+    rr_pre = float(p.r_pre_rates[0])
     rr_post = rate_post if rate_post is not None else r_post
     R = _compute_reward(p, rr_pre, rr_post, reward_pulse=reward_pulse)
     M, rbar_target = _compute_modulation(p, R, R_bar, rr_post)
@@ -686,11 +678,9 @@ def _smooth_rhs(
         I_s = float(y[_I_s_idx(i)])
         x = float(y[_X_pre_idx(i)])
         E = float(y[_E_idx(i)])
-        r = float(y[_R_pre_idx(i)])
         rhs[_I_s_idx(i)] = -I_s / p.tau_s
         rhs[_X_pre_idx(i)] = -x / p.tau_plus
         rhs[_E_idx(i)] = -E / p.tau_e
-        rhs[_R_pre_idx(i)] = -r / p.tau_r
         rhs[_W_idx(i)] = M * E
 
     return rhs
@@ -703,7 +693,6 @@ def _advance_state(
     *,
     method: str,
     voltage_active: bool,
-    rate_pre: float | None = None,
     rate_post: float | None = None,
     reward_pulse: float = 0.0,
 ) -> np.ndarray:
@@ -712,7 +701,7 @@ def _advance_state(
     The system is autonomous (no explicit t in the smooth RHS), so time
     is not forwarded.  Weight is projected onto [0, wmax] after each step.
     """
-    kw = dict(voltage_active=voltage_active, rate_pre=rate_pre, rate_post=rate_post, reward_pulse=reward_pulse)
+    kw = dict(voltage_active=voltage_active, rate_post=rate_post, reward_pulse=reward_pulse)
 
     def rhs(state: np.ndarray) -> np.ndarray:
         return _smooth_rhs(state, p, **kw)  # type: ignore[arg-type]
@@ -760,12 +749,11 @@ def _row_from_state(
     pre_spikes: list[int],
     post_spike: int,
     is_refractory: int,
-    rate_pre: float | None = None,
     rate_post: float | None = None,
     reward_pulse: float = 0.0,
 ) -> dict[str, float]:
     n = p.n_pre
-    rr_pre = rate_pre if rate_pre is not None else float(y[_R_pre_idx(0)])
+    rr_pre = float(p.r_pre_rates[0])
     rr_post = rate_post if rate_post is not None else float(y[R_POST_IDX])
     R = _compute_reward(p, rr_pre, rr_post, reward_pulse=reward_pulse)
     M, _ = _compute_modulation(p, R, float(y[RBAR_IDX]), rr_post)
@@ -780,7 +768,7 @@ def _row_from_state(
     for i in range(n):
         row[f"E{i+1}"] = float(y[_E_idx(i)])
     for i in range(n):
-        row[f"r_pre{i+1}"] = float(y[_R_pre_idx(i)])
+        row[f"r_pre{i+1}"] = float(p.r_pre_rates[i])
     row["r_post"] = rr_post
     row["R"] = float(R)
     row["R_bar"] = float(y[RBAR_IDX])
@@ -797,6 +785,8 @@ def simulate(
     hdf5_path: str | None = None,
     parquet_path: str | None = None,
     chunk_rows: int = 100_000,
+    *,
+    progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
 ):
     """Run the N-pre → 1-post neuromodulated STDP simulation.
 
@@ -807,7 +797,15 @@ def simulate(
 
     Synapse 0 is the "target" (reward-paired) synapse used for contingent
     reward coincidence detection.
+
+    Pass ``progress`` to customize the step-loop progress indicator; it
+    takes an iterable of step indices and returns an iterable. Defaults
+    to a tqdm bar on stderr; pass ``lambda it: it`` to silence it, or
+    e.g. ``mo.status.progress_bar`` to render a marimo UI widget.
     """
+    if progress is None:
+        progress = lambda it: tqdm(it, desc="Simulating", unit="step", mininterval=0.5)
+
     method = p.method.lower()
     if method not in {"euler", "rk4"}:
         raise ValueError("Params.method must be either 'euler' or 'rk4'.")
@@ -829,9 +827,7 @@ def simulate(
     y = _pack_state(p)
     ref_remaining = p.ref_remaining0
 
-    pre_spike_bufs: list[deque[float]] = [deque() for _ in range(n_pre)]
     post_spike_buf: deque[float] = deque()
-    win_r_pre: list[float] = [0.0] * n_pre
     win_r_post = 0.0
 
     # ── Reward delivery state ─────────────────────────────────
@@ -844,7 +840,7 @@ def simulate(
 
     recorder = _build_recorder(p, hdf5_path=hdf5_path, parquet_path=parquet_path, chunk_rows=chunk_rows)
 
-    for step in tqdm(range(n_steps), desc="Simulating", unit="step", mininterval=0.5):
+    for step in progress(range(n_steps)):
         t = step * p.dt
 
         # ── Deliver scheduled rewards and decay pulse ─────────
@@ -867,10 +863,7 @@ def simulate(
                 recorder.append_spike(f"pre{i+1}_spike_times", t)
                 y[_I_s_idx(i)] += 1.0
                 y[_X_pre_idx(i)] += 1.0
-                y[_R_pre_idx(i)] += 1.0
                 y[_E_idx(i)] -= p.eta_minus * y[_W_idx(i)] * y[Y_POST_IDX]
-                if use_window:
-                    pre_spike_bufs[i].append(t)
                 if p.reward_signal == "contingent" and i == 0:
                     recent_target_times.append(t)
 
@@ -879,15 +872,10 @@ def simulate(
 
         if use_window:
             cutoff = t - p.rate_window
-            for i in range(n_pre):
-                while pre_spike_bufs[i] and pre_spike_bufs[i][0] < cutoff:
-                    pre_spike_bufs[i].popleft()
-                win_r_pre[i] = len(pre_spike_bufs[i]) / p.rate_window
             while post_spike_buf and post_spike_buf[0] < cutoff:
                 post_spike_buf.popleft()
             win_r_post = len(post_spike_buf) / p.rate_window
 
-        rp = win_r_pre[0] if use_window else None
         ro = win_r_post if use_window else None
 
         # ── Prune old target times for contingent reward ──────
@@ -906,14 +894,12 @@ def simulate(
             I_s = [float(y[_I_s_idx(i)]) for i in range(n_pre)]
             x = [float(y[_X_pre_idx(i)]) for i in range(n_pre)]
             E = [float(y[_E_idx(i)]) for i in range(n_pre)]
-            r = [float(y[_R_pre_idx(i)]) for i in range(n_pre)]
             w = [float(y[_W_idx(i)]) for i in range(n_pre)]
 
             # Decay per-synapse variables
             for i in range(n_pre):
                 I_s[i] += p.dt * (-I_s[i] / p.tau_s)
                 x[i] += p.dt * (-x[i] / p.tau_plus)
-                r[i] += p.dt * (-r[i] / p.tau_r)
 
             if ref_remaining <= 0.0:
                 I_total = sum(w[i] * I_s[i] for i in range(n_pre))
@@ -942,7 +928,6 @@ def simulate(
                 if use_window:
                     post_spike_buf.append(t)
                     win_r_post = len(post_spike_buf) / p.rate_window
-                    rp = win_r_pre[0]
                     ro = win_r_post
 
             yp += p.dt * (-yp / p.tau_minus)
@@ -950,7 +935,7 @@ def simulate(
             for i in range(n_pre):
                 E[i] += p.dt * (-E[i] / p.tau_e)
 
-            rew_pre: float = rp if use_window else r[0]  # type: ignore[assignment]
+            rew_pre: float = float(p.r_pre_rates[0])
             rew_post: float = ro if use_window else r_post  # type: ignore[assignment]
             R = _compute_reward(p, rew_pre, rew_post, reward_pulse=d_reward)
             _, rbar_target = _compute_modulation(p, R, R_bar, rew_post)
@@ -970,14 +955,13 @@ def simulate(
                 y[_I_s_idx(i)] = I_s[i]
                 y[_X_pre_idx(i)] = x[i]
                 y[_E_idx(i)] = E[i]
-                y[_R_pre_idx(i)] = r[i]
                 y[_W_idx(i)] = w[i]
 
         else:
             # RK4 with threshold-crossing detection
             if ref_remaining <= 0.0:
                 v0 = float(y[V_IDX])
-                y_trial = _advance_state(y, p.dt, p, method="rk4", voltage_active=True, rate_pre=rp, rate_post=ro, reward_pulse=d_reward)
+                y_trial = _advance_state(y, p.dt, p, method="rk4", voltage_active=True, rate_post=ro, reward_pulse=d_reward)
                 frac = _crossing_fraction(v0, float(y_trial[V_IDX]), p.theta)
 
                 if frac is None:
@@ -986,7 +970,7 @@ def simulate(
                     dt1 = frac * p.dt
                     dt2 = p.dt - dt1
 
-                    y_mid = _advance_state(y, dt1, p, method="rk4", voltage_active=True, rate_pre=rp, rate_post=ro, reward_pulse=d_reward)
+                    y_mid = _advance_state(y, dt1, p, method="rk4", voltage_active=True, rate_post=ro, reward_pulse=d_reward)
                     spike_t = t + dt1
                     recorder.append_spike("post_spike_times", spike_t)
                     post_spike = 1
@@ -1006,11 +990,11 @@ def simulate(
                         post_spike_buf.append(spike_t)
                         ro = len(post_spike_buf) / p.rate_window
 
-                    y = _advance_state(y_mid, dt2, p, method="rk4", voltage_active=False, rate_pre=rp, rate_post=ro, reward_pulse=d_reward)
+                    y = _advance_state(y_mid, dt2, p, method="rk4", voltage_active=False, rate_post=ro, reward_pulse=d_reward)
                     y[V_IDX] = p.V_reset
                     ref_remaining = max(0.0, p.tau_ref - dt2)
             else:
-                y = _advance_state(y, p.dt, p, method="rk4", voltage_active=False, rate_pre=rp, rate_post=ro, reward_pulse=d_reward)
+                y = _advance_state(y, p.dt, p, method="rk4", voltage_active=False, rate_post=ro, reward_pulse=d_reward)
                 y[V_IDX] = p.V_reset
                 ref_remaining = max(0.0, ref_remaining - p.dt)
 
@@ -1023,7 +1007,6 @@ def simulate(
                     pre_spikes=pre_spikes,
                     post_spike=post_spike,
                     is_refractory=is_refractory,
-                    rate_pre=rp,
                     rate_post=ro,
                     reward_pulse=d_reward,
                 )
@@ -1760,7 +1743,7 @@ def main(
     host: Annotated[str, typer.Option(help="Host for server backend.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Port for server backend.")] = 8050,
     method: Annotated[str, typer.Option(help="Integrator for smooth dynamics.")] = "rk4",
-    rate_mode: Annotated[str, typer.Option(help="Firing-rate mode: 'exp' (exponential trace) or 'window' (spike count).")] = "exp",
+    rate_mode: Annotated[str, typer.Option(help="r_post firing-rate mode: 'exp' (exponential trace) or 'window' (spike count). r_pre is always constant.")] = "exp",
     rate_window: Annotated[float, typer.Option(help="Window duration in seconds for 'window' rate mode.")] = 0.5,
     neuromod_type: Annotated[str, typer.Option(help="Neuromodulator role (Frémaux Eq.14): covariance, gated, surprise, constant.")] = "covariance",
     reward_signal: Annotated[str, typer.Option(help="Reward signal: target_rate, biofeedback, contingent.")] = "target_rate",

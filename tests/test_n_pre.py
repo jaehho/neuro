@@ -17,7 +17,6 @@ from neuro.sim import (
     _W_idx,
     _E_idx,
     _X_pre_idx,
-    _R_pre_idx,
     V_IDX,
     Y_POST_IDX,
     R_POST_IDX,
@@ -69,7 +68,7 @@ class TestParamsBroadcasting:
 # ---------------------------------------------------------------------------
 
 class TestStateVectorLayout:
-    @pytest.mark.parametrize("n_pre,expected_size", [(1, 9), (2, 14), (5, 29), (10, 54)])
+    @pytest.mark.parametrize("n_pre,expected_size", [(1, 8), (2, 12), (5, 24), (10, 44)])
     def test_state_vector_size(self, n_pre: int, expected_size: int) -> None:
         assert n_state(n_pre) == expected_size
 
@@ -125,7 +124,7 @@ class TestKeyGeneration:
 class TestODEN1:
     def test_rhs_equilibrium(self) -> None:
         p = Params(n_pre=1, V0=-65.0, E_L=-65.0, w0=1.0,
-                   I_s0=0.0, x_pre0=0.0, E0=0.0, r_pre0=0.0,
+                   I_s0=0.0, x_pre0=0.0, E0=0.0,
                    r_post0=0.0, R_bar0=0.0, y_post0=0.0, r_target=0.0)
         y = _pack_state(p)
         rhs = _smooth_rhs(y, p, voltage_active=True)
@@ -133,7 +132,7 @@ class TestODEN1:
 
     def test_decay_single_synapse(self) -> None:
         p = Params(n_pre=1, I_s0=1.0, w0=0.0, E0=0.0,
-                   x_pre0=0.0, r_pre0=0.0, r_post0=0.0,
+                   x_pre0=0.0, r_post0=0.0,
                    R_bar0=0.0, y_post0=0.0, r_target=0.0, V0=-65.0, E_L=-65.0)
         y = _pack_state(p)
         dt = 1e-4
@@ -145,7 +144,7 @@ class TestODEN1:
 
     def test_weight_clamp(self) -> None:
         p = Params(n_pre=1, w0=0.001, E0=1.0, R_bar0=100.0,
-                   r_pre0=0.0, r_post0=0.0, r_target=0.0)
+                   r_post0=0.0, r_target=0.0)
         y = _pack_state(p)
         result = _advance_state(y, 0.01, p, method="rk4", voltage_active=False)
         assert result[_W_idx(0)] >= 0.0

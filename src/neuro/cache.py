@@ -10,6 +10,7 @@ import hashlib
 import json
 import sqlite3
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import fields
 from pathlib import Path
 
@@ -107,11 +108,15 @@ def cached_simulate(
     cache_dir: Path = Path("output"),
     chunk_rows: int = 100_000,
     force: bool = False,
+    progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
 ) -> dict:
     """Run simulation with content-addressed caching.
 
     If *force* is True, skip the cache lookup and always rerun (but still
     save the result to the cache, replacing any prior entry).
+
+    ``progress`` is forwarded to ``simulate()`` on cache miss; see that
+    function's docstring for the contract.
 
     Returns the same dict as ``simulate()`` when given a parquet_path:
     ``{"parquet_path", "parquet_spikes_path", "rows_written", "spikes_written"}``.
@@ -142,7 +147,7 @@ def cached_simulate(
     pq_path = str(cache_dir / f"{short}.parquet")
 
     t0 = time.monotonic()
-    rec = simulate(p, parquet_path=pq_path, chunk_rows=chunk_rows)
+    rec = simulate(p, parquet_path=pq_path, chunk_rows=chunk_rows, progress=progress)
     elapsed = time.monotonic() - t0
 
     spk_path = rec.get("parquet_spikes_path", pq_path.replace(".parquet", ".spikes.parquet"))
