@@ -151,50 +151,117 @@ The $chevron.l R chevron.r chevron.l H_i chevron.r$ bias drives both weights dow
 
 
 // ═══════════════════════════════════════════════════════════════════════
-= Complete System of Equations <complete-system>
+= Summary <summary>
 
-*State vector:* $bold(x)(t) = (V, y_"post", r_"post", overline(R), I_(s,1), x_1, E_1, r_1, w_1, I_(s,2), x_2, E_2, r_2, w_2) in RR^14$.
+*State.*  Shared (4): $V$, $y_"post"$, $r_"post"$, $overline(R)$.  Per synapse $i$ (5): $I_(s,i)$, $x_i$, $E_i$, $r_i$, $w_i$.
+
+*Initial conditions* ($t = 0$).  $V = E_L$ (refractory off);  $w_i = w_(i,0)$;  all other state variables zero.
 
 === Inter-spike dynamics
 
-$
-tau_m (d V) / (d t) &= -(V - E_L) + R_m (w_1 I_(s,1) + w_2 I_(s,2)) \
-(d y_"post") / (d t) &= -y_"post" slash tau_- \
-(d r_"post") / (d t) &= -r_"post" slash tau_r \
-tau_(overline(R)) (d overline(R)) / (d t) &= -overline(R) + T_"neuromod" \
-(d I_(s,i)) / (d t) &= -I_(s,i) slash tau_s \
-(d x_i) / (d t) &= -x_i slash tau_+ \
-(d E_i) / (d t) &= -E_i slash tau_e \
-(d r_i) / (d t) &= -r_i slash tau_r \
-(d w_i) / (d t) &= M dot E_i
-$ <eq:interspike>
+#table(
+  columns: (auto, 1fr),
+  stroke: none,
+  inset: (x: 8pt, y: 6pt),
+  align: (left + horizon, left + horizon),
+  column-gutter: 1em,
+  [Membrane],
+  [$tau_m space (d V) / (d t) = -(V - E_L) + R_m sum_i w_i I_(s,i)$],
 
-where $T_"neuromod"$ is the baseline tracking target: $R$ for covariance and gated, $r_"post"$ for surprise, $overline(R)$ for constant.
+  [Synaptic current],
+  [$(d I_(s,i)) / (d t) = -I_(s,i) slash tau_s$],
 
-=== Pre-synaptic spike at $t_i^k$
+  [STDP traces],
+  [$(d x_i) / (d t) = -x_i slash tau_+ quad quad (d y_"post") / (d t) = -y_"post" slash tau_-$],
 
-$ I_(s,i) arrow.l I_(s,i) + 1, quad x_i arrow.l x_i + 1, quad r_i arrow.l r_i + 1 $
-$ E_i arrow.l E_i - eta_- w_i y_"post"(t_i^(k-)) quad "(LTD eligibility)" $
+  [Rate filters],
+  [$(d r_i) / (d t) = -r_i slash tau_r quad quad (d r_"post") / (d t) = -r_"post" slash tau_r$],
 
-=== Post-synaptic spike at $t_"post"^k$
+  [Reward baseline],
+  [$tau_(overline(R)) space (d overline(R)) / (d t) = -overline(R) + T$  ($T$ depends on modulator, see below)],
 
-$ V arrow.l V_"reset", quad y_"post" arrow.l y_"post" + 1, quad r_"post" arrow.l r_"post" + 1 $
-$ E_i arrow.l E_i + eta_+ (w_max - w_i) x_i (t_"post"^(k-)) quad "(LTP eligibility, both synapses)" $
+  [Eligibility],
+  [$(d E_i) / (d t) = -E_i slash tau_e$],
 
-=== Reward scheduling (contingent mode)
+  [Weights],
+  [$(d w_i) / (d t) = M(t) dot E_i (t)$],
+)
 
-If pre#sub[1] fired within $Delta_c$ before the post-spike, schedule a global reward pulse at $t_"post"^k + Delta_"reward"$.
-
-=== Summary table
+=== Spike events
 
 #table(
-  columns: 4,
-  align: (left, left, left, left),
-  table.header([Neuromodulator], [$M$], [$overline(R)$ tracks], [Source]),
-  [Covariance],  [$R - overline(R)$],           [$R$],         [@fremauxNeuromodulatedSpikeTimingDependentPlasticity2016 Eq. 7],
-  [Gated],       [$R$],                          [$R$],         [@fremauxNeuromodulatedSpikeTimingDependentPlasticity2016 Eq. 14],
-  [Surprise],    [$(r_"post" - overline(R))^2$], [$r_"post"$],  [@yu2005],
-  [Constant],    [$1$],                          [---],         [Two-factor baseline],
+  columns: (auto, 1fr),
+  stroke: none,
+  inset: (x: 8pt, y: 6pt),
+  align: (left + horizon, left + horizon),
+  column-gutter: 1em,
+  [Pre#sub[$i$] spike],
+  [increment $I_(s,i)$, $x_i$, $r_i$ by 1; #h(0.6em) $E_i arrow.l E_i - eta_- w_i y_"post"$ #h(0.4em) _(LTD)_],
+
+  [Post spike],
+  [$V arrow.l V_"reset"$; #h(0.6em) increment $y_"post"$, $r_"post"$ by 1; #h(0.6em) $E_i arrow.l E_i + eta_+ (w_"max" - w_i) x_i$ for all $i$ #h(0.4em) _(LTP)_],
+
+  [Contingent reward],
+  [if pre#sub[1] fired within $Delta_c$ before post-spike: schedule pulse $R_"amount"$ at $t + Delta_"reward"$],
+)
+
+=== Neuromodulator $M(t)$
+
+#table(
+  columns: 3,
+  align: (left, left, left),
+  stroke: none,
+  inset: (x: 10pt, y: 6pt),
+  table.hline(stroke: 0.6pt),
+  table.header([Type], [$M$], [$overline(R)$ tracks ($T$)]),
+  table.hline(stroke: 0.4pt),
+  [Covariance],  [$R - overline(R)$],            [$R$],
+  [Gated],       [$R$],                          [$R$],
+  [Surprise],    [$(r_"post" - overline(R))^2$], [$r_"post"$],
+  [Constant],    [$1$],                          [---],
+  table.hline(stroke: 0.6pt),
+)
+
+=== Parameters
+
+#table(
+  columns: (auto, 1fr, auto),
+  align: (left, left, right),
+  stroke: none,
+  inset: (x: 8pt, y: 4pt),
+  table.hline(stroke: 0.6pt),
+  table.header([Parameter], [Description], [Value]),
+  table.hline(stroke: 0.4pt),
+
+  table.cell(colspan: 3, fill: luma(94%), inset: (x: 8pt, y: 5pt))[*LIF neuron*],
+  [$tau_m$],      [Membrane time constant], [20 ms],
+  [$E_L$],        [Resting potential],      [$-65$ mV],
+  [$R_m$],        [Membrane resistance],    [50 M$Omega$],
+  [$theta$],      [Spike threshold],        [$-50$ mV],
+  [$V_"reset"$],  [Reset potential],        [$-70$ mV],
+  [$tau_"ref"$],  [Refractory period],      [3 ms],
+
+  table.cell(colspan: 3, fill: luma(94%), inset: (x: 8pt, y: 5pt))[*Synapse*],
+  [$tau_s$],      [Synaptic decay],         [5 ms],
+  [$w_"max"$],    [Max weight],             [10],
+  [$w_(i,0)$],    [Initial weight],         [2.0],
+
+  table.cell(colspan: 3, fill: luma(94%), inset: (x: 8pt, y: 5pt))[*Plasticity*],
+  [$tau_+, tau_-$], [STDP windows],         [20 ms],
+  [$tau_e$],        [Eligibility decay],    [500 ms],
+  [$eta_+, eta_-$], [Learning rates],       [$10^(-4)$],
+
+  table.cell(colspan: 3, fill: luma(94%), inset: (x: 8pt, y: 5pt))[*Rate filters*],
+  [$tau_r$],             [Rate trace decay],      [500 ms],
+  [$tau_(overline(R))$], [Reward baseline decay], [5 s],
+
+  table.cell(colspan: 3, fill: luma(94%), inset: (x: 8pt, y: 5pt))[*Reward / input*],
+  [$r_"pre"$],         [Poisson firing rate (each pre)], [20 Hz],
+  [$Delta_"reward"$],  [Reward delay],                    [1.0 s],
+  [$R_"amount"$],      [Reward pulse amplitude],          [1.0],
+  [$tau_d$],           [Reward pulse decay],              [200 ms],
+  [$Delta_c$],         [Coincidence window],              [20 ms],
+  table.hline(stroke: 0.6pt),
 )
 
 
@@ -255,35 +322,6 @@ Over many reward events, $w_1$ grows while $w_2$ remains flat or drifts downward
 )
 
 The eligibility trace ($tau_e = 500$ ms) is the critical bridge.  It outlives the STDP traces ($20$ ms) but decays before the next reward ($tilde 1$ s).  This window is what allows the delayed reward to selectively read out which synapse was causal @fremaux2010.
-
-
-// ═══════════════════════════════════════════════════════════════════════
-= Parameters <parameters>
-
-#table(
-  columns: 4,
-  align: (left, left, left, left),
-  table.header([Parameter], [Description], [Value], [Source]),
-  [$tau_m$],            [Membrane time constant],       [20 ms],       [@dayanTheoreticalNeuroscienceComputational2001],
-  [$E_L$],              [Resting potential],             [$-65$ mV],    [@dayanTheoreticalNeuroscienceComputational2001],
-  [$R_m$],              [Membrane resistance],           [50 M$Omega$], [@dayanTheoreticalNeuroscienceComputational2001],
-  [$theta$],            [Spike threshold],               [$-50$ mV],    [@gerstnerNeuronalDynamicsSingle2014],
-  [$V_"reset"$],        [Reset potential],               [$-70$ mV],    [@gerstnerNeuronalDynamicsSingle2014],
-  [$tau_"ref"$],        [Refractory period],             [3 ms],        [@gerstnerNeuronalDynamicsSingle2014],
-  [$tau_s$],            [Synaptic decay],                [5 ms],        [@dayanTheoreticalNeuroscienceComputational2001],
-  [$tau_+, tau_-$],     [STDP windows],                  [20 ms],       [@biSynapticModificationsCultured1998],
-  [$tau_r$],            [Rate trace decay],              [500 ms],      [@gerstnerNeuronalDynamicsSingle2014],
-  [$tau_e$],            [Eligibility decay],             [500 ms],      [@fremauxNeuromodulatedSpikeTimingDependentPlasticity2016],
-  [$tau_(overline(R))$], [Reward baseline],              [5 s],         [@fremauxNeuromodulatedSpikeTimingDependentPlasticity2016],
-  [$eta_+, eta_-$],     [Learning rates],                [$10^(-4)$],   [@Song2000],
-  [$w_"max"$],          [Max weight],                    [10],          [---],
-  [$w_(1,0), w_(2,0)$], [Initial weights],               [2.0],         [---],
-  [$r_"pre"$],          [Poisson firing rate (each)],    [20 Hz],       [@fremaux2010],
-  [$Delta_"reward"$],   [Reward delay],                  [1.0 s],       [@izhikevich2007],
-  [$R_"amount"$],       [Reward pulse amplitude],        [1.0],         [@izhikevich2007],
-  [$tau_d$],            [Reward pulse decay],            [200 ms],      [---],
-  [$Delta_c$],          [Coincidence window],            [20 ms],       [@izhikevich2007],
-)
 
 
 // ═══════════════════════════════════════════════════════════════════════

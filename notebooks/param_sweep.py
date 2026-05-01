@@ -88,13 +88,13 @@ def _(Params, np, simulate, sweep_param_select):
 def _(pl, plt, pname, sweep_results):
     df_s = pl.DataFrame(sweep_results)
     fig_s, axes_s = plt.subplots(1, 2, figsize=(11, 4))
-    axes_s[0].plot(df_s["v"], df_s["w_final"], "o-", color="tab:orange")
+    axes_s[0].plot(df_s["v"], df_s["w_final"], "o", color="tab:orange")
     axes_s[0].set_xlabel(pname)
     axes_s[0].set_ylabel("w_final")
     axes_s[0].set_title(f"Final weight vs {pname}")
     axes_s[0].grid(True, alpha=0.2)
 
-    axes_s[1].plot(df_s["v"], df_s["rate"], "o-", color="tab:red")
+    axes_s[1].plot(df_s["v"], df_s["rate"], "o", color="tab:red")
     axes_s[1].axhline(10.0, ls="--", color="black", alpha=0.5, label="target")
     axes_s[1].set_xlabel(pname)
     axes_s[1].set_ylabel("late post rate (Hz)")

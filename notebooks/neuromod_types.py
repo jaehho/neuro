@@ -70,10 +70,10 @@ def _(Params, simulate):
 def _(plt, runs_neuromod):
     fig_nm, axes_nm = plt.subplots(4, 1, figsize=(11, 9), sharex=True)
     for _nm, (_p_nm, _rec_nm) in runs_neuromod.items():
-        axes_nm[0].plot(_rec_nm["t"], _rec_nm["w1"], label=_nm, lw=0.8, alpha=0.85)
-        axes_nm[1].plot(_rec_nm["t"], _rec_nm["r_post"], label=_nm, lw=0.5, alpha=0.85)
-        axes_nm[2].plot(_rec_nm["t"], _rec_nm["M"], label=_nm, lw=0.4, alpha=0.7)
-        axes_nm[3].plot(_rec_nm["t"], _rec_nm["E1"], label=_nm, lw=0.4, alpha=0.7)
+        axes_nm[0].plot(_rec_nm["t"], _rec_nm["w1"], label=_nm, ls="none", marker=".", ms=1.5, alpha=0.85)
+        axes_nm[1].plot(_rec_nm["t"], _rec_nm["r_post"], label=_nm, ls="none", marker=".", ms=1.0, alpha=0.85)
+        axes_nm[2].plot(_rec_nm["t"], _rec_nm["M"], label=_nm, ls="none", marker=".", ms=1.0, alpha=0.7)
+        axes_nm[3].plot(_rec_nm["t"], _rec_nm["E1"], label=_nm, ls="none", marker=".", ms=1.0, alpha=0.7)
 
     _titles_nm = ["w₁", "r_post (Hz)", "M", "E₁"]
     for _ax_nm, _t_nm in zip(axes_nm, _titles_nm):

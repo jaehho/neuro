@@ -26,6 +26,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/neuro"]
 
+[tool.marimo.runtime]
+output_max_bytes = 10_000_000
+
 [tool.pyright]
 pythonPlatform = "Linux"
 venvPath = "."

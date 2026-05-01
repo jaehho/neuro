@@ -1,8 +1,7 @@
 """Baseline path: 1 pre → 1 post LIF, target_rate reward, covariance neuromodulator.
 
-The reviewed reference configuration. Other per-topic notebooks
-(credit_assignment, neuromod_types, reward_signals, target_shapes,
-rate_estimator, param_sweep) vary one axis at a time from this baseline.
+The reviewed reference configuration. Other notebooks in this directory
+each vary one axis from this baseline — see their docstrings.
 """
 
 import marimo
@@ -44,19 +43,35 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    T_slider = mo.ui.slider(start=2.0, stop=60.0, step=2.0, value=10.0, label="duration T (s)", show_value=True)
-    rate_slider = mo.ui.slider(start=5.0, stop=80.0, step=1.0, value=20.0, label="r_pre (Hz)", show_value=True)
-    target_slider = mo.ui.slider(start=1.0, stop=30.0, step=1.0, value=10.0, label="r_target (Hz)", show_value=True)
-    w0_slider = mo.ui.slider(start=0.5, stop=8.0, step=0.5, value=2.0, label="w0", show_value=True)
-    seed_slider = mo.ui.slider(start=1, stop=20, step=1, value=1, label="seed", show_value=True)
-    mo.vstack([T_slider, rate_slider, target_slider, w0_slider, seed_slider])
-    return T_slider, rate_slider, seed_slider, target_slider, w0_slider
+    T_slider = mo.ui.slider(start=2.0, stop=60.0, step=2.0, value=10.0, label="duration T (s)", include_input=True)
+    rate_slider = mo.ui.slider(start=5.0, stop=80.0, step=1.0, value=20.0, label="r_pre (Hz)", include_input=True)
+    target_slider = mo.ui.slider(start=1.0, stop=40.0, step=1.0, value=10.0, label="r_target (Hz)", include_input=True)
+    w0_slider = mo.ui.slider(start=0.5, stop=2.0, step=0.1, value=2.0, label="w0", include_input=True)
+    seed_slider = mo.ui.slider(start=1, stop=20, step=1, value=1, label="seed", include_input=True)
+    plasticity_off = mo.ui.checkbox(value=False, label="disable plasticity (η₊ = η₋ = 0, weights frozen at w0)")
+    mo.vstack([T_slider, rate_slider, target_slider, w0_slider, seed_slider, plasticity_off])
+    return (
+        T_slider,
+        plasticity_off,
+        rate_slider,
+        seed_slider,
+        target_slider,
+        w0_slider,
+    )
 
 
 @app.cell
-def _(T_slider, rate_slider, seed_slider, target_slider, w0_slider):
+def _(
+    T_slider,
+    plasticity_off,
+    rate_slider,
+    seed_slider,
+    target_slider,
+    w0_slider,
+):
     from neuro.sim import Params, simulate
 
+    _eta = 0.0 if plasticity_off.value else 1e-4
     p = Params(
         T=T_slider.value,
         dt=1e-4,
@@ -66,31 +81,80 @@ def _(T_slider, rate_slider, seed_slider, target_slider, w0_slider):
         r_pre_rates=(rate_slider.value,),
         poisson=False,
         w0=(w0_slider.value,),
-        reward_signal="target_rate",
+        eta_plus=_eta,
+        eta_minus=_eta,
+        reward_signal="constant", R_const=0.0,
         target_func="fixed",
         r_target=target_slider.value,
-        neuromod_type="covariance",
+        neuromod_type="constant",
         rate_mode="window",
         rate_window=0.5,
         record_every=1e-3,
     )
+        # _p = Params(
+        #     T=float(T_slider.value), dt=float(dt_dropdown.value), method="rk4",
+        #     seed=int(seed_slider.value),
+        #     n_pre=1, r_pre_rates=(float(_rp),),
+        #     poisson=bool(poisson_check.value),
+        #     w0=(float(_w),),
+        #     wmax=W_TOP,
+        #     eta_plus=0.0, eta_minus=0.0,
+        #     reward_signal="constant", R_const=0.0,
+        #     neuromod_type="constant",
+        #     rate_mode="window", rate_window=0.5,
+        #     record_every=1e-3,
+        # )
     rec = simulate(p)
     return Params, p, rec
 
 
 @app.cell
 def _(mo, p, rec):
-    n_pre_spikes = len(rec["pre1_spike_times"])
-    n_post_spikes = len(rec["post_spike_times"])
-    half = p.T / 2
-    late_post = rec["post_spike_times"][rec["post_spike_times"] >= half]
-    late_rate = len(late_post) / (p.T - half) if p.T > half else 0.0
+    _n_pre_spikes = len(rec["pre1_spike_times"])
+    _n_post_spikes = len(rec["post_spike_times"])
+    _half = p.T / 2
+    _late_post = rec["post_spike_times"][rec["post_spike_times"] >= _half]
+    _late_rate = len(_late_post) / (p.T - _half) if p.T > _half else 0.0
     mo.md(
         f"""
-        **Run summary** — T = {p.T:.1f} s, {n_pre_spikes:,} pre spikes, {n_post_spikes:,} post spikes.
+        **Run summary** — T = {p.T:.1f} s, {_n_pre_spikes:,} pre spikes, {_n_post_spikes:,} post spikes.
 
-        Late-half post rate: **{late_rate:.2f} Hz** (target {p.r_target:.1f} Hz).
+        Late-half post rate: **{_late_rate:.2f} Hz** (target {p.r_target:.1f} Hz).
         Final weight: **w₁ = {rec['w1'][-1]:.3f}** (initial {p.w0[0]:.2f}, max {p.wmax:.1f}).
+        """
+    )
+    return
+
+
+@app.cell
+def _(mo, p, rec):
+    import numpy as _np
+
+    _half = p.T / 2
+    _late_mask = rec["t"] >= _half
+    _late_post_spk = rec["post_spike_times"][rec["post_spike_times"] >= _half]
+    _r_late = len(_late_post_spk) / (p.T - _half) if p.T > _half else 0.0
+
+    _rate_err = abs(_r_late - p.r_target) / p.r_target
+    _w_stab = float(_np.std(rec["w1"][_late_mask])) / p.wmax
+    _M_bar_late = float(_np.mean(rec["M"][_late_mask]))
+    _R_std_late = float(_np.std(rec["R"][_late_mask]))
+    _m_ratio = abs(_M_bar_late) / max(_R_std_late, 1e-12)
+
+    _EPS_R, _EPS_W, _EPS_M = 0.10, 0.02, 0.10
+    _c1, _c2, _c3 = _rate_err < _EPS_R, _w_stab < _EPS_W, _m_ratio < _EPS_M
+    _verdict = "**CONVERGED**" if (_c1 and _c2 and _c3) else "**NOT CONVERGED**"
+    _mark = lambda ok: "yes" if ok else "no"
+
+    mo.md(
+        f"""
+        **Convergence verdict (late half, t > T/2):** {_verdict}
+
+        | criterion | value | threshold | pass |
+        |---|---|---|---|
+        | (1) rate tracking, \\|r_post − r_target\\|/r_target | {_rate_err:.3f} | {_EPS_R:.2f} | {_mark(_c1)} |
+        | (2) weight stability, σ_w / w_max | {_w_stab:.4f} | {_EPS_W:.3f} | {_mark(_c2)} |
+        | (3) baseline catch-up, \\|M̄\\| / σ_R | {_m_ratio:.3f} | {_EPS_M:.2f} | {_mark(_c3)} |
         """
     )
     return
@@ -107,14 +171,18 @@ def _():
 @app.cell
 def _(go, make_subplots, p, rec):
     fig = make_subplots(
-        rows=6, cols=1, shared_xaxes=True, vertical_spacing=0.035,
+        rows=10, cols=1, shared_xaxes=True, vertical_spacing=0.022,
         subplot_titles=(
             "Spike times",
-            "Membrane potential",
-            "Synaptic weight",
-            "Eligibility trace",
-            f"Firing rates (sliding window, {p.rate_window:.2g} s)",
-            "Tracking error",
+            "Membrane potential V",
+            "Synaptic current I_s1",
+            "STDP traces (x_pre1, y_post)",
+            "Eligibility trace E₁",
+            "Synaptic weight w₁",
+            f"Post firing rate r_post (sliding window, {p.rate_window:.2g} s)",
+            "Tracking error |r_post − r_target|",
+            "Reward R and baseline R̄",
+            "Modulator M = R − R̄",
         ),
     )
     t = rec["t"]
@@ -133,7 +201,7 @@ def _(go, make_subplots, p, rec):
     )
 
     fig.add_trace(
-        go.Scattergl(x=t, y=rec["V"], mode="lines", line=dict(width=1, color="rebeccapurple"),
+        go.Scattergl(x=t, y=rec["V"], mode="markers", marker=dict(size=2, color="rebeccapurple"),
                      name="V", showlegend=False),
         row=2, col=1,
     )
@@ -143,51 +211,87 @@ def _(go, make_subplots, p, rec):
                   annotation_text="V_reset", annotation_position="bottom right", row=2, col=1)
 
     fig.add_trace(
-        go.Scattergl(x=t, y=rec["w1"], mode="lines", line=dict(color="darkorange"),
-                     name="w₁", showlegend=False),
+        go.Scattergl(x=t, y=rec["I_s1"], mode="markers", marker=dict(size=2, color="teal"),
+                     name="I_s1", showlegend=False),
         row=3, col=1,
     )
-    fig.add_hline(y=p.w0[0], line=dict(dash="dot", color="gray", width=1),
-                  annotation_text=f"w0 = {p.w0[0]}", annotation_position="top right", row=3, col=1)
 
     fig.add_trace(
-        go.Scattergl(x=t, y=rec["E1"], mode="lines", line=dict(width=1, color="seagreen"),
-                     name="E₁", showlegend=False),
+        go.Scattergl(x=t, y=rec["x_pre1"], mode="markers", marker=dict(size=2, color="royalblue"),
+                     name="x_pre1"),
         row=4, col=1,
     )
-    fig.add_hline(y=0, line=dict(dash="dot", color="gray", width=1), row=4, col=1)
+    fig.add_trace(
+        go.Scattergl(x=t, y=rec["y_post"], mode="markers", marker=dict(size=2, color="crimson"),
+                     name="y_post"),
+        row=4, col=1,
+    )
 
     fig.add_trace(
-        go.Scattergl(x=t, y=rec["r_pre1"], mode="lines", line=dict(width=1, color="royalblue"),
-                     name="r_pre"),
+        go.Scattergl(x=t, y=rec["E1"], mode="markers", marker=dict(size=2, color="seagreen"),
+                     name="E₁", showlegend=False),
         row=5, col=1,
     )
-    fig.add_trace(
-        go.Scattergl(x=t, y=rec["r_post"], mode="lines", line=dict(width=1, color="crimson"),
-                     name="r_post"),
-        row=5, col=1,
-    )
-    fig.add_hline(y=p.r_target, line=dict(dash="dash", color="black", width=1),
-                  annotation_text=f"target ({p.r_target:.0f} Hz)", annotation_position="top right", row=5, col=1)
+    fig.add_hline(y=0, line=dict(dash="dot", color="gray", width=1), row=5, col=1)
 
     fig.add_trace(
-        go.Scattergl(x=t, y=abs(rec["r_post"] - p.r_target), mode="lines",
-                     line=dict(width=1, color="crimson"),
-                     name="|r_post − r_target|", showlegend=False),
+        go.Scattergl(x=t, y=rec["w1"], mode="markers", marker=dict(size=2, color="darkorange"),
+                     name="w₁", showlegend=False),
         row=6, col=1,
     )
+    fig.add_hline(y=p.w0[0], line=dict(dash="dot", color="gray", width=1),
+                  annotation_text=f"w0 = {p.w0[0]}", annotation_position="top right", row=6, col=1)
+
+    fig.add_trace(
+        go.Scattergl(x=t, y=rec["r_post"], mode="markers", marker=dict(size=2, color="crimson"),
+                     name="r_post", showlegend=False),
+        row=7, col=1,
+    )
+    fig.add_hline(y=p.r_target, line=dict(dash="dash", color="black", width=1),
+                  annotation_text=f"target ({p.r_target:.0f} Hz)", annotation_position="top right", row=7, col=1)
+    fig.add_hline(y=p.r_pre_rates[0], line=dict(dash="dot", color="royalblue", width=1),
+                  annotation_text=f"r_pre ({p.r_pre_rates[0]:.0f} Hz)", annotation_position="bottom right", row=7, col=1)
+
+    fig.add_trace(
+        go.Scattergl(x=t, y=abs(rec["r_post"] - p.r_target), mode="markers",
+                     marker=dict(size=2, color="crimson"),
+                     name="|r_post − r_target|", showlegend=False),
+        row=8, col=1,
+    )
     fig.add_hline(y=1 / p.rate_window, line=dict(dash="dash", color="black", width=1),
-                  annotation_text="1/W", annotation_position="top right", row=6, col=1)
+                  annotation_text="1/W", annotation_position="top right", row=8, col=1)
+
+    fig.add_trace(
+        go.Scattergl(x=t, y=rec["R"], mode="markers", marker=dict(size=2, color="crimson"),
+                     opacity=0.6, name="R"),
+        row=9, col=1,
+    )
+    fig.add_trace(
+        go.Scattergl(x=t, y=rec["R_bar"], mode="markers", marker=dict(size=2, color="seagreen"),
+                     name="R̄"),
+        row=9, col=1,
+    )
+
+    fig.add_trace(
+        go.Scattergl(x=t, y=rec["M"], mode="markers", marker=dict(size=2, color="mediumpurple"),
+                     name="M", showlegend=False),
+        row=10, col=1,
+    )
+    fig.add_hline(y=0, line=dict(dash="dot", color="gray", width=1), row=10, col=1)
 
     fig.update_yaxes(tickvals=[0, 1], ticktext=["post", "pre"], row=1, col=1)
     fig.update_yaxes(title_text="V (mV)", row=2, col=1)
-    fig.update_yaxes(title_text="w₁", row=3, col=1)
-    fig.update_yaxes(title_text="E₁", row=4, col=1)
-    fig.update_yaxes(title_text="Hz", row=5, col=1)
-    fig.update_yaxes(title_text="Hz", row=6, col=1)
-    fig.update_xaxes(title_text="Time (s)", row=6, col=1)
+    fig.update_yaxes(title_text="I_s1", row=3, col=1)
+    fig.update_yaxes(title_text="trace", row=4, col=1)
+    fig.update_yaxes(title_text="E₁", row=5, col=1)
+    fig.update_yaxes(title_text="w₁", row=6, col=1)
+    fig.update_yaxes(title_text="Hz", row=7, col=1)
+    fig.update_yaxes(title_text="Hz", row=8, col=1)
+    fig.update_yaxes(title_text="signal", row=9, col=1)
+    fig.update_yaxes(title_text="M", row=10, col=1)
+    fig.update_xaxes(title_text="Time (s)", row=10, col=1)
     fig.update_layout(
-        height=900, hovermode="x unified",
+        height=1300, hovermode="x unified",
         margin=dict(t=40, l=70, r=20, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
@@ -234,6 +338,7 @@ def _(
     Params,
     long_run_button,
     mo,
+    plasticity_off,
     rate_slider,
     seed_slider,
     target_slider,
@@ -243,6 +348,7 @@ def _(
 
     from neuro.cache import cached_simulate
 
+    _eta_long = 0.0 if plasticity_off.value else 1e-4
     p_long = Params(
         T=60.0,
         dt=1e-4,
@@ -252,6 +358,8 @@ def _(
         r_pre_rates=(rate_slider.value,),
         poisson=False,
         w0=(w0_slider.value,),
+        eta_plus=_eta_long,
+        eta_minus=_eta_long,
         reward_signal="target_rate",
         target_func="fixed",
         r_target=target_slider.value,
@@ -286,26 +394,26 @@ def _(df_long, go, make_subplots, p_long):
         ),
     )
     fig_l.add_trace(
-        go.Scattergl(x=df_long["t"], y=df_long["w1"], mode="lines",
-                     line=dict(width=1, color="darkorange"), name="w₁", showlegend=False),
+        go.Scattergl(x=df_long["t"], y=df_long["w1"], mode="markers",
+                     marker=dict(size=2, color="darkorange"), name="w₁", showlegend=False),
         row=1, col=1,
     )
     fig_l.add_trace(
-        go.Scattergl(x=df_long["t"], y=df_long["r_post"], mode="lines",
-                     line=dict(width=1, color="crimson"), name="r_post", showlegend=False),
+        go.Scattergl(x=df_long["t"], y=df_long["r_post"], mode="markers",
+                     marker=dict(size=2, color="crimson"), name="r_post", showlegend=False),
         row=2, col=1,
     )
     fig_l.add_hline(y=p_long.r_target, line=dict(dash="dash", color="black", width=1),
                     annotation_text=f"target ({p_long.r_target:.0f} Hz)",
                     annotation_position="top right", row=2, col=1)
     fig_l.add_trace(
-        go.Scattergl(x=df_long["t"], y=df_long["M"], mode="lines",
-                     line=dict(width=1, color="crimson"), opacity=0.7, name="M"),
+        go.Scattergl(x=df_long["t"], y=df_long["M"], mode="markers",
+                     marker=dict(size=2, color="crimson"), opacity=0.7, name="M"),
         row=3, col=1,
     )
     fig_l.add_trace(
-        go.Scattergl(x=df_long["t"], y=df_long["R_bar"], mode="lines",
-                     line=dict(color="darkorange"), name="R̄"),
+        go.Scattergl(x=df_long["t"], y=df_long["R_bar"], mode="markers",
+                     marker=dict(size=2, color="darkorange"), name="R̄"),
         row=3, col=1,
     )
     fig_l.add_hline(y=0, line=dict(dash="dot", color="gray", width=1), row=3, col=1)

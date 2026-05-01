@@ -13,11 +13,13 @@ The three-factor learning rule is:  dw_i/dt = M(t) · E_i(t), where
         M = S            surprise / novelty-modulated STDP
         M = const        non-modulated STDP
   - R(t) is a reward signal set by ``reward_signal``:
-        target_rate      R = -(r_post - target)²  (self-supervisory demonstration)
-        biofeedback      R = delayed pulse after every post-spike (Legenstein+ 2008)
-        contingent       R = delayed pulse only when pre1 fires within a
-                         coincidence window before a post-spike (Izhikevich 2007;
-                         Frémaux & Gerstner 2016, Eq. 10 "gated-Hebbian")
+        target_rate         R = -(r_post - target)²  (self-supervisory; pairs with covariance M)
+        target_rate_linear  R = target - r_post       (signed; pairs naturally with gated M)
+        biofeedback         R = delayed pulse after every post-spike (Legenstein+ 2008)
+        contingent          R = delayed pulse only when pre1 fires within a
+                            coincidence window before a post-spike (Izhikevich 2007;
+                            Frémaux & Gerstner 2016, Eq. 10 "gated-Hebbian")
+        constant            R = R_const  (diagnostic: feedback decoupled from r_post)
 
 The contingent reward demonstrates spatial credit assignment: both synapses
 receive the same global M, but only synapse 1 (target) has high E when the
@@ -158,6 +160,7 @@ class Params:
     tau_s: float = 0.005      # Synaptic decay constant (s); 5 ms
     R_m: float = 50.0         # Membrane input resistance (MΩ)
     I_s0: tuple[float, ...] | float = (0.0,)
+    I_ext: float = 0.0        # Constant DC bias current to post-synaptic neuron (nA)
 
     # ── STDP traces (Bi & Poo 1998) ───────────────────────
     tau_plus: float = 0.02    # Pre→post LTP window (s); 20 ms
@@ -181,13 +184,16 @@ class Params:
     neuromod_type: str = "covariance"  # covariance | gated | surprise | constant
 
     # ── Reward signal ──────────────────────────────────────
-    reward_signal: str = "target_rate"  # target_rate | biofeedback | contingent
+    reward_signal: str = "target_rate"  # target_rate | target_rate_linear | biofeedback | contingent | constant
 
     # ── Target-rate parameters (reward_signal="target_rate") ──
     target_func: str = "fixed"         # fixed | linear | affine | quadratic | sqrt | log | sin | power
     target_func_params: str = ""       # JSON dict of coefficients, e.g. '{"a": 0.3, "b": 2.0}'
     r_target: float = 10.0             # Target rate-trace value for target_func="fixed"
     alpha: float = 0.5                 # Slope for target_func="linear": target = α · r_pre
+
+    # ── Constant-reward diagnostic (reward_signal="constant") ──
+    R_const: float = 0.0               # Fixed scalar reward; bypasses any r_post / target dependence
 
     # ── Reward delivery (biofeedback / contingent) ──────────
     reward_delay: float = 1.0          # Delay from event to reward delivery (s)
@@ -570,6 +576,11 @@ def _compute_reward(
     if sig == "target_rate":
         target = max(_compute_target_r_post(p, r_pre), 0.0)
         return -(r_post - target) ** 2
+    elif sig == "target_rate_linear":
+        target = max(_compute_target_r_post(p, r_pre), 0.0)
+        return target - r_post
+    elif sig == "constant":
+        return p.R_const
     elif sig in ("biofeedback", "contingent"):
         return reward_pulse
     else:
@@ -660,13 +671,13 @@ def _smooth_rhs(
     R = _compute_reward(p, rr_pre, rr_post, reward_pulse=reward_pulse)
     M, rbar_target = _compute_modulation(p, R, R_bar, rr_post)
 
-    # LIF membrane: τ_m · dV/dt = -(V - E_L) + R_m · Σ w_i · I_s_i
+    # LIF membrane: τ_m · dV/dt = -(V - E_L) + R_m · (Σ w_i · I_s_i + I_ext)
     if voltage_active:
         I_total = 0.0
         for i in range(n):
             wi = float(np.clip(y[_W_idx(i)], 0.0, p.wmax))
             I_total += wi * float(y[_I_s_idx(i)])
-        rhs[V_IDX] = (-(V - p.E_L) + p.R_m * I_total) / p.tau_m
+        rhs[V_IDX] = (-(V - p.E_L) + p.R_m * (I_total + p.I_ext)) / p.tau_m
 
     # ── Shared traces ──
     rhs[Y_POST_IDX] = -yp / p.tau_minus
@@ -903,7 +914,7 @@ def simulate(
 
             if ref_remaining <= 0.0:
                 I_total = sum(w[i] * I_s[i] for i in range(n_pre))
-                dV = (p.dt / p.tau_m) * (-(V - p.E_L) + p.R_m * I_total)
+                dV = (p.dt / p.tau_m) * (-(V - p.E_L) + p.R_m * (I_total + p.I_ext))
                 V_new = V + dV
                 if V < p.theta and V_new >= p.theta:
                     post_spike = 1
@@ -1746,7 +1757,7 @@ def main(
     rate_mode: Annotated[str, typer.Option(help="r_post firing-rate mode: 'exp' (exponential trace) or 'window' (spike count). r_pre is always constant.")] = "exp",
     rate_window: Annotated[float, typer.Option(help="Window duration in seconds for 'window' rate mode.")] = 0.5,
     neuromod_type: Annotated[str, typer.Option(help="Neuromodulator role (Frémaux Eq.14): covariance, gated, surprise, constant.")] = "covariance",
-    reward_signal: Annotated[str, typer.Option(help="Reward signal: target_rate, biofeedback, contingent.")] = "target_rate",
+    reward_signal: Annotated[str, typer.Option(help="Reward signal: target_rate, biofeedback, contingent, constant.")] = "target_rate",
     n_pre: Annotated[int, typer.Option(help="Number of pre-synaptic neurons.")] = 1,
     variables: Annotated[list[str] | None, typer.Option(help="Variables to plot (e.g. --variables E1 --variables w1). Defaults to all.")] = None,
     no_cache: Annotated[bool, typer.Option("--no-cache", help="Force rerun, ignoring cached results.")] = False,
@@ -1760,8 +1771,8 @@ def main(
         raise typer.BadParameter(f"rate-mode must be one of: exp, window (got {rate_mode!r})")
     if neuromod_type not in {"covariance", "gated", "surprise", "constant"}:
         raise typer.BadParameter(f"neuromod-type must be one of: covariance, gated, surprise, constant (got {neuromod_type!r})")
-    if reward_signal not in {"target_rate", "biofeedback", "contingent"}:
-        raise typer.BadParameter(f"reward-signal must be one of: target_rate, biofeedback, contingent (got {reward_signal!r})")
+    if reward_signal not in {"target_rate", "biofeedback", "contingent", "constant"}:
+        raise typer.BadParameter(f"reward-signal must be one of: target_rate, biofeedback, contingent, constant (got {reward_signal!r})")
     if n_pre < 1:
         raise typer.BadParameter(f"n-pre must be >= 1 (got {n_pre})")
 

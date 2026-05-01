@@ -62,8 +62,8 @@ def _(Params, simulate):
 def _(plt, runs_target):
     fig_t, axes_t = plt.subplots(2, 1, figsize=(11, 5), sharex=True)
     for _tf, (_p_tf, _rec_tf) in runs_target.items():
-        axes_t[0].plot(_rec_tf["t"], _rec_tf["w1"], label=_tf, lw=0.8)
-        axes_t[1].plot(_rec_tf["t"], _rec_tf["r_post"], label=_tf, lw=0.5, alpha=0.8)
+        axes_t[0].plot(_rec_tf["t"], _rec_tf["w1"], label=_tf, ls="none", marker=".", ms=1.5)
+        axes_t[1].plot(_rec_tf["t"], _rec_tf["r_post"], label=_tf, ls="none", marker=".", ms=1.0, alpha=0.8)
     axes_t[0].set_ylabel("w₁")
     axes_t[0].legend(loc="upper right", fontsize=8)
     axes_t[1].set_ylabel("r_post (Hz)")

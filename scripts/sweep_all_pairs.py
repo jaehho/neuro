@@ -214,10 +214,22 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--n-grid", type=int, default=10, help="grid points per axis")
     ap.add_argument("--pairs", type=int, default=None, help="only first N pairs (smoke test)")
+    ap.add_argument("--only", action="append", default=None,
+                    help='restrict to specific pair(s); format "x_var,y_var"; repeatable')
     ap.add_argument("--out-dir", type=Path, default=OUT_DIR)
     args = ap.parse_args()
 
     all_pairs = list(itertools.combinations(VARS.keys(), 2))
+    if args.only:
+        wanted: set[frozenset[str]] = set()
+        for spec in args.only:
+            parts = [p.strip() for p in spec.split(",")]
+            if len(parts) != 2 or not all(p in VARS for p in parts):
+                raise SystemExit(f"--only expects 'x_var,y_var' with known vars, got: {spec!r}")
+            wanted.add(frozenset(parts))
+        all_pairs = [p for p in all_pairs if frozenset(p) in wanted]
+        if not all_pairs:
+            raise SystemExit("no pairs matched --only filter")
     if args.pairs is not None:
         all_pairs = all_pairs[:args.pairs]
 

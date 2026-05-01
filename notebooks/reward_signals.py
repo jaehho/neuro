@@ -8,12 +8,14 @@ Varies from `baseline.py` by: reward_signal (and n_pre for contingent).
 
 import marimo
 
+__generated_with = "0.23.1"
 app = marimo.App(width="medium")
 
 
 @app.cell
 def _():
     import marimo as mo
+
     return (mo,)
 
 
@@ -21,22 +23,21 @@ def _():
 def _():
     import matplotlib.pyplot as plt
     from neuro.sim import Params, simulate
+
     return Params, plt, simulate
 
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        # Reward signals
+    mo.md(r"""
+    # Reward signals
 
-        Holding `neuromod_type="covariance"`, swap the reward source:
+    Holding `neuromod_type="covariance"`, swap the reward source:
 
-        - **target_rate** — $R = -(r_\text{post} - r_\text{target})^2$ (self-supervisory demo)
-        - **biofeedback** — delayed pulse after every post-spike (Legenstein 2008)
-        - **contingent** — delayed pulse only after pre→post coincidences (Izhikevich 2007)
-        """
-    )
+    - **target_rate** — $R = -(r_\text{post} - r_\text{target})^2$ (self-supervisory demo)
+    - **biofeedback** — delayed pulse after every post-spike (Legenstein 2008)
+    - **contingent** — delayed pulse only after pre→post coincidences (Izhikevich 2007)
+    """)
     return
 
 
@@ -70,9 +71,9 @@ def _(Params, simulate):
 def _(plt, runs_reward):
     fig_r, axes_r = plt.subplots(3, 1, figsize=(11, 7), sharex=True)
     for _name_r, (_p_r, _rec_r) in runs_reward.items():
-        axes_r[0].plot(_rec_r["t"], _rec_r["w1"], label=f"{_name_r}: w₁", lw=0.8)
-        axes_r[1].plot(_rec_r["t"], _rec_r["R"], label=_name_r, lw=0.4, alpha=0.7)
-        axes_r[2].plot(_rec_r["t"], _rec_r["M"], label=_name_r, lw=0.4, alpha=0.7)
+        axes_r[0].plot(_rec_r["t"], _rec_r["w1"], label=f"{_name_r}: w₁", ls="none", marker=".", ms=1.5)
+        axes_r[1].plot(_rec_r["t"], _rec_r["R"], label=_name_r, ls="none", marker=".", ms=1.0, alpha=0.7)
+        axes_r[2].plot(_rec_r["t"], _rec_r["M"], label=_name_r, ls="none", marker=".", ms=1.0, alpha=0.7)
     axes_r[0].set_ylabel("w₁")
     axes_r[0].set_title("Weight trajectories")
     axes_r[0].legend(loc="upper right", fontsize=8)
