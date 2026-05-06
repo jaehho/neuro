@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable
 import numpy as np
 from tqdm import tqdm
 
+from neuro.convergence import StreamingConvergence
 from neuro.dynamics import (
     _advance_state,
     _compute_modulation,
@@ -36,6 +37,7 @@ def simulate(
     chunk_rows: int = 100_000,
     *,
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
+    early_stop: StreamingConvergence | None = None,
 ):
     """Run the N-pre → 1-post neuromodulated STDP simulation.
 
@@ -51,6 +53,10 @@ def simulate(
     takes an iterable of step indices and returns an iterable.  Defaults
     to a tqdm bar on stderr; pass ``lambda it: it`` to silence it, or
     e.g. ``mo.status.progress_bar`` to render a marimo UI widget.
+
+    Pass ``early_stop`` (a ``StreamingConvergence``) to break the loop
+    once the post-synaptic firing rate has held steady; the recorder is
+    finalised normally so all data up to the stop point is preserved.
     """
     if progress is None:
         progress = lambda it: tqdm(it, desc="Simulating", unit="step", mininterval=0.5)
@@ -250,5 +256,9 @@ def simulate(
                     reward_pulse=d_reward,
                 )
             )
+            if early_stop is not None:
+                rr_post = ro if ro is not None else float(y[R_POST_IDX])
+                if early_stop.update(t, rr_post):
+                    break
 
     return recorder.finalize()

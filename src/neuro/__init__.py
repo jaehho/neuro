@@ -3,6 +3,11 @@
 The full implementation lives in focused submodules; this package
 re-exports the names most callers want.
 """
+from neuro.convergence import (
+    ConvergenceCriterion,
+    StreamingConvergence,
+    check_steady_state,
+)
 from neuro.params import Params, n_state, series_keys, spike_keys
 from neuro.recording import (
     HDF5Recorder,
@@ -24,4 +29,7 @@ __all__ = [
     "n_state",
     "series_keys",
     "spike_keys",
+    "ConvergenceCriterion",
+    "StreamingConvergence",
+    "check_steady_state",
 ]
