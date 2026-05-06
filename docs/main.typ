@@ -1,4 +1,4 @@
-#set document(title: "Neuromodulated STDP: Three-Neuron Model", date: auto)
+#set document(title: "Neuromodulated STDP", date: auto)
 #set text(font: "New Computer Modern", size: 11pt)
 #set page(margin: 1in)
 #set par(leading: 0.7em, first-line-indent: 1em, justify: true)
@@ -19,9 +19,19 @@
 #align(center)[
   #text(size: 18pt, weight: "bold")[Neuromodulated Spike-Timing-Dependent Plasticity]
   #v(0.3em)
-  #text(size: 14pt)[A Three-Neuron Model for Spatial Credit Assignment]
+  #text(size: 14pt)[From Single-Neuron Operant Conditioning to Spatial Credit Assignment]
   #v(1em)
 ]
+
+// ═══════════════════════════════════════════════════════════════════════
+= Introduction <introduction>
+
+The basic question this model addresses is the one Fetz posed in 1969 @fetz1969: can a single cortical neuron be operantly conditioned to fire more or less often when reward is contingent on its activity?  Fetz showed it could; the modern brain--machine-interface literature @moritz2011 turns this into engineering --- decode a neuron's spike rate into a reward, and the animal learns to drive it.  The natural mechanistic question is what plasticity rule the synapses onto that neuron must obey for this to work.  Three-factor learning rules @fremauxNeuromodulatedSpikeTimingDependentPlasticity2016 give an answer: a global reward-prediction-error signal $M(t)$ multiplies a per-synapse eligibility trace $E_i (t)$ that bridges the gap between a millisecond spike and a delayed reward.
+
+Mathematically, this is REINFORCE @williams1992 with a value baseline --- the covariance neuromodulator $M = R - overline(R)$ is exactly the policy-gradient update where $overline(R)$ plays the role of the critic, as Frémaux & Gerstner derive in their §4.3.  The single-presynaptic version of the model ($n_"pre" = 1$) is a minimal in-silico Fetz experiment: one neuron, one reward contingency, learn to hit a target firing rate.  The two-presynaptic version ($n_"pre" = 2$) is the spatial-credit story this document develops in detail: when the same global reward signal reaches every synapse, only the synapse whose pre-spikes systematically precede post-spikes accumulates eligibility at reward time, so reward selectively reads out the causal input.
+
+The theory below is written for $n_"pre" = 2$ throughout; the simulation results in §9 use $n_"pre" = 1$ unless otherwise stated.  Each axis of the parameter space ($n_"pre"$, neuromodulator type, reward signal, target shape, integrator) is studied separately in a notebook under `notebooks/`.
+
 
 // ═══════════════════════════════════════════════════════════════════════
 = Circuit and Neural Dynamics
@@ -124,7 +134,7 @@ The reward signal $R(t)$ defines _what_ the system is rewarded for.  In the thre
 
 $ R = -(r_"post" - r_"target")^2 $ <eq:target-rate>
 
-The postsynaptic rate is penalised for deviating from a target.  This is self-supervisory (not from the literature) but useful for verifying the ODE machinery.
+The postsynaptic rate is penalised for deviating from a target.  This is self-supervisory (not from the literature) but useful for verifying the ODE machinery and is the closest analog to the Fetz operant-conditioning experiment when $n_"pre" = 1$.
 
 == Biofeedback <reward-biofeedback>
 
@@ -257,6 +267,7 @@ The $chevron.l R chevron.r chevron.l H_i chevron.r$ bias drives both weights dow
 
   table.cell(colspan: 3, fill: luma(94%), inset: (x: 8pt, y: 5pt))[*Reward / input*],
   [$r_"pre"$],         [Poisson firing rate (each pre)], [20 Hz],
+  [$r_"target"$],      [Target post-rate (target-rate reward)], [10 Hz],
   [$Delta_"reward"$],  [Reward delay],                    [1.0 s],
   [$R_"amount"$],      [Reward pulse amplitude],          [1.0],
   [$tau_d$],           [Reward pulse decay],              [200 ms],
@@ -276,19 +287,7 @@ For the RK4 path, threshold crossing detection uses linear interpolation: given 
 
 $ f = (theta - V_0) / (V_1 - V_0) $
 
-The timestep is split: integrate to $t + f Delta t$, apply the spike, integrate the remainder.  Spike-time accuracy is $cal(O)(Delta t^2)$.
-
-== RK4 Convergence
-
-Spike discontinuities violate the smoothness assumption underlying classical convergence theorems, reducing RK4's effective order:
-
-#table(
-  columns: 4,
-  align: (left, center, center, center),
-  table.header([Variable], [Euler (expect 1)], [RK4 (expect 4)], [Note]),
-  [$V$ (mV)], [0.20], [1.57], [Degraded by spike discontinuities],
-  [$w$],       [1.79], [1.25], [Slow variable; averaging effects],
-)
+The timestep is split: integrate to $t + f Delta t$, apply the spike, integrate the remainder.  Spike-time accuracy is $cal(O)(Delta t^2)$.  Spike discontinuities violate the smoothness assumption underlying classical convergence theorems, so the effective RK4 order on the full state is below 4 (see §9.1 for the empirical orders).
 
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -322,6 +321,122 @@ Over many reward events, $w_1$ grows while $w_2$ remains flat or drifts downward
 )
 
 The eligibility trace ($tau_e = 500$ ms) is the critical bridge.  It outlives the STDP traces ($20$ ms) but decays before the next reward ($tilde 1$ s).  This window is what allows the delayed reward to selectively read out which synapse was causal @fremaux2010.
+
+
+// ═══════════════════════════════════════════════════════════════════════
+= Results <results>
+
+Unless noted otherwise, simulations use $n_"pre" = 1$, RK4 integration ($Delta t = 0.1$ ms), Poisson pre-synaptic input at 20 Hz, covariance neuromodulator, target-rate reward signal ($r_"target" = 10$ Hz), and seed 42.
+
+== Numerical Validation <numerical-validation>
+
+#figure(
+  image("../output/rk4_convergence.png", width: 95%),
+  caption: [RK4 convergence analysis.  Membrane voltage $V$ converges at order $tilde 1.6$ (degraded from 4 by spike discontinuities); the slow weight $w$ converges at order $tilde 1.3$.  Reference solution computed at $Delta t = 10^(-5)$ ms.],
+) <fig:rk4-convergence>
+
+#figure(
+  image("../output/rk4_validation.png", width: 95%),
+  caption: [Validation of the RK4 integrator against a high-resolution Euler reference.  All state variables ($V$, $w$, $E$, $r_"post"$, $R$, $M$) agree to within expected truncation error.],
+) <fig:rk4-validation>
+
+#figure(
+  image("../output/derivatives.png", width: 95%),
+  caption: [Time derivatives of each state variable, verifying the ODE right-hand side implementation.  Discontinuous jumps correspond to spike events (pre- and post-synaptic).],
+) <fig:derivatives>
+
+== Convergence over $(w_0, eta)$ <convergence-analysis>
+
+These figures sweep over initial weights and learning rates to characterise the basin of convergence for the target-rate self-supervisory paradigm.
+
+#figure(
+  image("../output/convergence_w_final.png", width: 95%),
+  caption: [Final weight $w_"final"$ as a function of initial weight $w_0$ and learning rate $eta$.  The target-rate reward signal drives weights toward a fixed point that achieves $r_"post" approx r_"target"$.],
+) <fig:convergence-w-final>
+
+#figure(
+  image("../output/convergence_w_stability.png", width: 95%),
+  caption: [Weight stability in the second half of the simulation ($t > T slash 2$), measured as standard deviation of $w(t)$.  Low $w_"std"$ indicates convergence to a stable equilibrium; high values indicate oscillation or drift.],
+) <fig:convergence-w-stability>
+
+#figure(
+  image("../output/convergence_rate_error.png", width: 95%),
+  caption: [Relative rate error $|r_"post" - r_"target"| slash r_"target"$ in the second half of the simulation.  The learning rule successfully drives post-synaptic firing rate toward the target across a wide range of initial conditions.],
+) <fig:convergence-rate-error>
+
+#figure(
+  image("../output/convergence_map.png", width: 95%),
+  caption: [Convergence map over the two-dimensional parameter space.  Green indicates successful convergence ($< 10%$ relative rate error); red indicates failure.  The basin of convergence is broad but bounded.],
+) <fig:convergence-map>
+
+== Neuromodulator Comparison <neuromod-comparison>
+
+Four neuromodulator types are compared under identical conditions ($n_"pre" = 2$, contingent reward, $T = 100$ s).
+
+#figure(
+  image("../output/neuromod_comparison.png", width: 100%),
+  caption: [Side-by-side weight trajectories $w_1(t)$ (target-paired) and $w_2(t)$ (distractor) under the four neuromodulator types: covariance (RPE), gated Hebbian, surprise/novelty, and constant (two-factor STDP baseline).],
+) <fig:neuromod-comparison>
+
+#figure(
+  image("../output/neuromod_details.png", width: 100%),
+  caption: [Detailed state-variable traces for each neuromodulator type.  Panels show membrane voltage $V$, eligibility traces $E_i$, firing rates $r$, reward signal $R$, reward baseline $overline(R)$, and modulator $M$.],
+) <fig:neuromod-details>
+
+#figure(
+  image("../output/neuromod_summary.png", width: 95%),
+  caption: [Summary metrics across neuromodulator types: final weights, weight separation ($w_1 - w_2$), post-synaptic firing rate, and weight stability.  The covariance (RPE) type achieves the best spatial credit assignment (largest $w_1 - w_2$ separation).],
+) <fig:neuromod-summary>
+
+== Regime Analysis <regime-analysis>
+
+Systematic exploration of reward signal $times$ neuromodulator type combinations.
+
+#figure(
+  image("../output/regime_comparison.png", width: 100%),
+  caption: [Weight trajectories across all reward signal $times$ neuromodulator type combinations.  Rows: reward signals (target-rate, biofeedback, contingent).  Columns: neuromodulator types (covariance, gated, surprise, constant).],
+) <fig:regime-comparison>
+
+#figure(
+  image("../output/regime_details.png", width: 100%),
+  caption: [Detailed state-variable traces for selected regime combinations, showing the internal dynamics ($E$, $R$, $M$) that drive divergent learning outcomes.],
+) <fig:regime-details>
+
+#figure(
+  image("../output/regime_summary.png", width: 95%),
+  caption: [Summary heatmaps across the reward signal $times$ neuromodulator grid.  Metrics: final weight, weight separation, post-rate achieved, stability.  The contingent $times$ covariance combination is the most effective for spatial credit assignment.],
+) <fig:regime-summary>
+
+#figure(
+  image("../output/regime_ic_sensitivity.png", width: 95%),
+  caption: [Sensitivity to initial conditions across regimes.  Each regime is simulated from multiple random seeds and initial weights.  Robust regimes (covariance, contingent) show tight convergence; fragile regimes (constant, surprise) show high variance.],
+) <fig:regime-ic-sensitivity>
+
+== Spectral Analysis <spectral-analysis>
+
+#figure(
+  image("../output/spectrograms.png", width: 100%),
+  caption: [Spectrograms of key state variables ($V$, $w$, $r_"post"$) computed via short-time Fourier transform.  The weight $w$ and firing rate $r_"post"$ show low-frequency oscillations ($< 5$ Hz) driven by the reward-modulation feedback loop.  Membrane voltage $V$ exhibits broadband structure dominated by spike timing.],
+) <fig:spectrograms>
+
+== Target Function Sweeps <target-functions>
+
+The target-rate reward signal $R = -(r_"post" - f(r_"pre"))^2$ can be parameterised by an arbitrary target function $f$.  These sweeps test the learning rule's ability to track different functional relationships.
+
+#figure(
+  image("../output/general_target_curves.png", width: 90%),
+  caption: [Target functions tested: fixed, linear, affine, quadratic, square root, logarithmic, sinusoidal, and power.  Each defines a different desired mapping $r_"post" = f(r_"pre")$.],
+) <fig:target-curves>
+
+#figure(
+  image("../output/general_target_timeseries.png", width: 100%),
+  caption: [Weight and firing-rate time series under each target function.  The learning rule converges for all monotone targets; non-monotone functions (sinusoidal) produce oscillatory behaviour.],
+) <fig:target-timeseries>
+
+#figure(
+  image("../output/general_target_scatter.png", width: 90%),
+  caption: [Achieved $r_"post"$ vs.\ target $f(r_"pre")$ for each target function.  Points near the diagonal indicate successful tracking.  Scatter around the diagonal reflects stochastic variability from Poisson input.],
+) <fig:target-scatter>
 
 
 // ═══════════════════════════════════════════════════════════════════════
