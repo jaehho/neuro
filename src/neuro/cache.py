@@ -14,7 +14,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import fields
 from pathlib import Path
 
-from neuro.sim import Params, simulate
+from neuro.params import Params
+from neuro.simulate import simulate
 
 # Fields that do NOT affect simulation dynamics and are excluded from the hash.
 _EXCLUDED_FROM_HASH = frozenset({"record_every"})

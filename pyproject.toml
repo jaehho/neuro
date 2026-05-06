@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-neuro = "neuro.sim:app"
+neuro = "neuro.cli:app"
 
 [build-system]
 requires = ["hatchling"]
