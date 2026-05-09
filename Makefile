@@ -24,20 +24,19 @@ help: ## Show this help message
 # session on $(REMOTE_HOST), attaches a TTY for live streaming, and
 # rsyncs output/ back when the job ends.
 #
-# Resilience:
-#   - SSH drop / Ctrl-B d / Ctrl-C of make → remote tmux session keeps
-#     running. Re-run `make remote` (CMD optional when a session exists)
-#     to re-attach, then poll-and-collect resumes from where it left off.
-#   - The job's exit status is written to /tmp/$(REMOTE_TMUX)-rc and
-#     propagates as the make exit code.
+# All remote commands are routed through bash (via `bash -c '...'` for
+# one-liners or piped to bash via stdin for multi-line scripts) so they
+# work regardless of the user's login shell on $(REMOTE_HOST).  The
+# inner tmux session command is also `bash -c '...'` so the inner shell
+# is bash even if tmux's default-shell on the host is fish.
 #
-# Preconditions (both checked before launching):
-#   - Local working tree is clean (commit or stash first).
-#   - $(REMOTE_HOST) working tree is clean (clean it via `make remote-shell`).
+# Resilience: SSH drop / Ctrl-B d / Ctrl-C of make all leave the tmux
+# session running.  Re-run `make remote` (CMD optional when a session
+# is already alive) to re-attach and resume polling.
 
-remote: ## Push, run CMD on $(REMOTE_HOST) in tmux:$(REMOTE_TMUX), stream live, pull outputs. CMD optional if session is already running.
+remote: ## Push, run CMD on $(REMOTE_HOST) in tmux:$(REMOTE_TMUX), stream live, pull outputs. CMD optional if session running.
 	set -euo pipefail
-	if ssh $(REMOTE_HOST) "tmux has-session -t $(REMOTE_TMUX) 2>/dev/null"; then
+	if ssh $(REMOTE_HOST) "bash -c 'tmux has-session -t $(REMOTE_TMUX) 2>/dev/null'"; then
 		echo ">>> existing tmux:$(REMOTE_TMUX) on $(REMOTE_HOST); reattaching (CMD ignored)"
 	else
 		if [ -z "$(CMD)" ]; then
@@ -51,7 +50,7 @@ remote: ## Push, run CMD on $(REMOTE_HOST) in tmux:$(REMOTE_TMUX), stream live, 
 			exit 1
 		fi
 		echo ">>> checking $(REMOTE_HOST) working tree"
-		remote_dirty=$$(ssh $(REMOTE_HOST) "cd $(REMOTE_PROJ) && git status --porcelain")
+		remote_dirty=$$(ssh $(REMOTE_HOST) "bash -c 'cd $(REMOTE_PROJ) && git status --porcelain'")
 		if [ -n "$$remote_dirty" ]; then
 			echo "ERROR: $(REMOTE_HOST):$(REMOTE_PROJ) working tree is dirty:"
 			echo "$$remote_dirty"
@@ -61,16 +60,22 @@ remote: ## Push, run CMD on $(REMOTE_HOST) in tmux:$(REMOTE_TMUX), stream live, 
 		echo ">>> pushing local commits"
 		git push
 		echo ">>> launching tmux:$(REMOTE_TMUX) (git pull && $(CMD))"
-		ssh $(REMOTE_HOST) "tmux new-session -d -s $(REMOTE_TMUX) \
-			'cd $(REMOTE_PROJ) && git pull --ff-only && ($(CMD)); echo \$\$? > /tmp/$(REMOTE_TMUX)-rc; sleep 2'"
+		ssh $(REMOTE_HOST) bash <<-'EOF'
+			tmux new-session -d -s $(REMOTE_TMUX) "bash -c 'cd $(REMOTE_PROJ) && git pull --ff-only && ($(CMD)); echo \$$? > /tmp/$(REMOTE_TMUX)-rc; sleep 2'"
+		EOF
+		if ! ssh $(REMOTE_HOST) "bash -c 'tmux has-session -t $(REMOTE_TMUX) 2>/dev/null'"; then
+			echo "ERROR: failed to launch tmux:$(REMOTE_TMUX) on $(REMOTE_HOST)"
+			ssh $(REMOTE_HOST) "bash -c 'tmux ls 2>/dev/null; cat /tmp/$(REMOTE_TMUX)-rc 2>/dev/null'" || true
+			exit 1
+		fi
 	fi
 	echo ">>> attaching (Ctrl-B d to detach safely; job continues on $(REMOTE_HOST))"
 	set +e
-	ssh -t $(REMOTE_HOST) "tmux has-session -t $(REMOTE_TMUX) 2>/dev/null && tmux attach -t $(REMOTE_TMUX) || echo '(session already ended)'"
+	ssh -t $(REMOTE_HOST) "bash -c 'tmux has-session -t $(REMOTE_TMUX) 2>/dev/null && tmux attach -t $(REMOTE_TMUX) || echo \"(session already ended)\"'"
 	set -e
 	echo ">>> waiting for tmux:$(REMOTE_TMUX) to finish"
-	ssh $(REMOTE_HOST) "while tmux has-session -t $(REMOTE_TMUX) 2>/dev/null; do sleep 10; done"
-	rc=$$(ssh $(REMOTE_HOST) "cat /tmp/$(REMOTE_TMUX)-rc 2>/dev/null || echo 1")
+	ssh $(REMOTE_HOST) "bash -c 'while tmux has-session -t $(REMOTE_TMUX) 2>/dev/null; do sleep 10; done'"
+	rc=$$(ssh $(REMOTE_HOST) "bash -c 'cat /tmp/$(REMOTE_TMUX)-rc 2>/dev/null || echo 1'")
 	echo ">>> remote exited $$rc; syncing output/ back"
 	rsync -av --update --exclude='*.tmp' --exclude='runs.db' \
 		$(REMOTE_HOST):$(REMOTE_PROJ)/output/ ./output/ || true
