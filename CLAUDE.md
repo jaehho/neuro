@@ -4,14 +4,15 @@
 
 Neuromodulated STDP simulation: pre-synaptic neurons → 1 post-synaptic LIF neuron, implementing three-factor learning rules from Frémaux & Gerstner (2016).
 
-The **baseline path** is 1 pre → 1 post with `target_rate` reward and `covariance` neuromodulator (`notebooks/baseline.py`). The unified write-up is `docs/main.typ`; references are in `docs/references.bib`.
+The **baseline path** is 1 pre → 1 post with `target_rate` reward and `covariance` neuromodulator. Run it via `uv run neuro run` (defaults match the baseline). The unified write-up is `docs/main.typ`; references are in `docs/references.bib`.
 
 ## Commands
 
 ```bash
 uv sync                                       # install (uv + hatchling)
-uv run marimo edit notebooks/baseline.py      # interactive baseline path
-uv run neuro --help                           # CLI: long sim + zoom-adaptive viewer
+uv run neuro --help                           # CLI: run, list, show, sweep
+uv run neuro run                              # interactive single-run wizard
+uv run neuro list                             # browse cached runs
 uv run pytest                                 # tests
 typst compile --root . docs/main.typ          # build the write-up (PDFs are gitignored)
 ```
@@ -39,10 +40,9 @@ Cross-cutting facts:
 
 ## Where work belongs
 
-- **CLI (`uv run neuro`)** — long runs (minutes to hours). Streams to parquet via `ParquetRecorder`, registers in the cache. Launch `--plot-backend server` for the zoom-adaptive viewer on `127.0.0.1:8050` with live parquet re-decimation on every scroll-zoom.
-- **Scripts (`scripts/<name>.py`)** — sweeps and other batch simulations. Examples: `sweep_target_ceiling.py` (2D `r_pre` × `r_target` ceiling sweep), `sweep_all_pairs.py`. Outputs land in `output/sweeps/<hash>.{parquet,json,png}` keyed by manifest hash so re-running is idempotent.
-- **Notebooks** — quick scratchwork + visualisation only. **Do not put real simulations in notebooks** — they take a long time to run and marimo doesn't persist outputs across kernels. Use a notebook to load a parquet that a script produced and explore it interactively.
-- **Standalone viewer** — extended drill-down into one parquet; keep it open in a separate tab while iterating in a notebook.
+- **CLI (`uv run neuro`)** — primary interface. Subcommands: `run` (single sim, all Params exposed, `--interactive` wizard or `--config FILE`), `list`/`show <hash>` (browse + view cached runs), `sweep run/show/cell/index` (2D sweeps and drill-down), `config init [run|sweep]` (write a TOML with all defaults + descriptions), `cache merge` (integrate a remote runs.db). Cells route through `cached_simulate` so sweep cells share `output/runs.db` with single runs. The zoom-adaptive HTTP viewer (`127.0.0.1:8050`) re-decimates parquet on every scroll-zoom.
+- **Examples (`examples/*.toml`)** — starter configs (`baseline-run`, `credit-assignment-run`, `ceiling-sweep`). Copy and edit, then pass via `--config`.
+- **Notebooks** — quick scratchwork + visualisation only. **Do not put real simulations in notebooks** — they take a long time to run and marimo doesn't persist outputs across kernels. Use a notebook to load a parquet that the CLI produced and explore it interactively.
 
 ## Key design decisions
 

@@ -1,4 +1,0 @@
-how do we know the model doesn't drive w too high such that the model just locks r post to r pre in the non plastic model (which is essentially what happens once w becomes constant)
-
-replace r post - 1/2 r pre squared with just a constant R, and sweep R and watch how w behaves
-make sure w is initially a value that makes sense.
