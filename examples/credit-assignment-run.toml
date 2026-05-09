@@ -1,0 +1,44 @@
+# Spatial credit assignment: 2 pre → 1 post.
+# Synapse 0 is the "target" (reward-paired in contingent mode); synapse 1
+# is a distractor with the same statistics. Both see the same global
+# modulator M, but only synapse 0's eligibility lines up with reward
+# delivery, so its weight grows while w_2 drifts.
+#
+# Run:  uv run neuro run --config examples/credit-assignment-run.toml
+
+# ── Simulation ──
+T = 120.0
+dt = 0.0001
+seed = 1
+method = "rk4"
+n_pre = 2
+record_every = 0.001
+
+# ── Pre input (per-synapse arrays; same rate here, but you can differ) ──
+r_pre_rates = [20.0, 20.0]
+poisson = true
+
+# ── Rate estimation ──
+rate_mode = "window"
+rate_window = 0.5
+
+# ── Neuromod / reward ──
+# Reward fires reward_delay seconds after a post-spike that follows a
+# synapse-0 pre-spike inside coincidence_window. Synapse 1 never gets
+# explicitly paired.
+neuromod_type = "covariance"
+reward_signal = "contingent"
+reward_delay = 0.5
+reward_amount = 1.0
+reward_tau = 0.2
+coincidence_window = 0.02
+
+# ── Weights ──
+w0 = [2.0, 2.0]
+wmax = 10.0
+eta_plus = 0.0001
+eta_minus = 0.0001
+
+[runner]
+plot = true
+variables = ["V", "r_post", "w1", "w2", "E1", "E2", "M", "R"]

@@ -15,7 +15,7 @@ so existing notebooks, tests, and scripts keep working.
 """
 from __future__ import annotations
 
-from neuro.cli import app, main  # noqa: F401
+from neuro.cli import app  # noqa: F401
 from neuro.dynamics import (  # noqa: F401
     _advance_state,
     _compute_modulation,

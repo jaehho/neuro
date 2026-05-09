@@ -1,8 +1,9 @@
 """Simulation cache: content-addressed storage backed by SQLite.
 
-Hashes all physics-relevant Params fields to produce a deterministic
-fingerprint.  If a matching run exists in the registry, its saved
-parquet files are returned instead of re-running the simulation.
+Hashes all physics-relevant Params fields (plus any optional early-stop
+criterion) to produce a deterministic fingerprint.  If a matching run
+exists in the registry, its saved parquet files are returned instead of
+re-running the simulation.
 """
 from __future__ import annotations
 
@@ -11,9 +12,10 @@ import json
 import sqlite3
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import fields
+from dataclasses import asdict, fields
 from pathlib import Path
 
+from neuro.convergence import ConvergenceCriterion, StreamingConvergence
 from neuro.params import Params
 from neuro.simulate import simulate
 
@@ -33,8 +35,25 @@ CREATE TABLE IF NOT EXISTS runs (
 """
 
 
-def params_hash(p: Params) -> str:
-    """Deterministic SHA-256 hex digest of all simulation-relevant fields."""
+def _early_stop_dict(early_stop: StreamingConvergence | None) -> dict | None:
+    """Serialize the streaming detector's config + target for hashing.
+
+    The runtime state (queues, streak) is not part of the cache key — only
+    the criterion and target matter, since they are what determine when
+    the loop breaks for a given Params trajectory.
+    """
+    if early_stop is None:
+        return None
+    return {"criterion": asdict(early_stop.criterion), "target": early_stop.target}
+
+
+def params_hash(p: Params, early_stop: StreamingConvergence | None = None) -> str:
+    """Deterministic SHA-256 hex digest of all simulation-relevant fields.
+
+    Including ``early_stop`` (when non-None) folds the convergence
+    criterion and target into the hash so cells with different stopping
+    behavior get distinct cache entries.
+    """
     d: dict = {}
     for f in fields(p):
         if f.name in _EXCLUDED_FROM_HASH:
@@ -44,6 +63,9 @@ def params_hash(p: Params) -> str:
         if isinstance(val, tuple):
             val = list(val)
         d[f.name] = val
+    es = _early_stop_dict(early_stop)
+    if es is not None:
+        d["__early_stop"] = es
     canonical = json.dumps(d, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -110,6 +132,8 @@ def cached_simulate(
     chunk_rows: int = 100_000,
     force: bool = False,
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
+    early_stop: StreamingConvergence | None = None,
+    quiet: bool = False,
 ) -> dict:
     """Run simulation with content-addressed caching.
 
@@ -119,10 +143,14 @@ def cached_simulate(
     ``progress`` is forwarded to ``simulate()`` on cache miss; see that
     function's docstring for the contract.
 
+    ``early_stop`` is forwarded to ``simulate()`` and its config (criterion
+    + target) is included in the hash, so two runs that share Params but
+    differ in early-stop config get distinct cache entries.
+
     Returns the same dict as ``simulate()`` when given a parquet_path:
     ``{"parquet_path", "parquet_spikes_path", "rows_written", "spikes_written"}``.
     """
-    hash_hex = params_hash(p)
+    hash_hex = params_hash(p, early_stop=early_stop)
     short = hash_hex[:12]
     db_path = cache_dir / "runs.db"
 
@@ -132,7 +160,8 @@ def cached_simulate(
             pq = Path(hit["parquet_path"])
             sp = Path(hit["spikes_path"])
             if pq.exists() and sp.exists():
-                print(f"Cache hit: {short} (run from {hit['created_at']})")
+                if not quiet:
+                    print(f"Cache hit: {short} (run from {hit['created_at']})")
                 return {
                     "parquet_path": str(pq),
                     "parquet_spikes_path": str(sp),
@@ -148,12 +177,19 @@ def cached_simulate(
     pq_path = str(cache_dir / f"{short}.parquet")
 
     t0 = time.monotonic()
-    rec = simulate(p, parquet_path=pq_path, chunk_rows=chunk_rows, progress=progress)
+    rec = simulate(
+        p,
+        parquet_path=pq_path,
+        chunk_rows=chunk_rows,
+        progress=progress,
+        early_stop=early_stop,
+    )
     elapsed = time.monotonic() - t0
 
     spk_path = rec.get("parquet_spikes_path", pq_path.replace(".parquet", ".spikes.parquet"))
     register_run(db_path, hash_hex, p, pq_path, spk_path, elapsed)
-    print(f"Cached as {short} ({elapsed:.1f}s)")
+    if not quiet:
+        print(f"Cached as {short} ({elapsed:.1f}s)")
     return rec
 
 
@@ -164,3 +200,32 @@ def _delete_run(db_path: Path, hash_hex: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def merge_runs_db(local_db: Path, other_db: Path) -> dict[str, int]:
+    """Merge rows from *other_db* into *local_db* using INSERT OR IGNORE.
+
+    Returns a count of rows seen and rows inserted.  Hash is the primary
+    key, so duplicates are dropped silently (every cached run is
+    content-addressed, so two databases agreeing on a hash agree on the
+    run).
+    """
+    if not other_db.exists():
+        raise FileNotFoundError(other_db)
+    conn = _init_db(local_db)
+    try:
+        rows_before = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+        conn.execute("ATTACH DATABASE ? AS other", (str(other_db),))
+        conn.execute(
+            "INSERT OR IGNORE INTO runs "
+            "(hash, params_json, record_every, created_at, duration_s, parquet_path, spikes_path) "
+            "SELECT hash, params_json, record_every, created_at, duration_s, parquet_path, spikes_path "
+            "FROM other.runs"
+        )
+        seen = conn.execute("SELECT COUNT(*) FROM other.runs").fetchone()[0]
+        conn.execute("DETACH DATABASE other")
+        conn.commit()
+        rows_after = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+    finally:
+        conn.close()
+    return {"seen": int(seen), "inserted": int(rows_after - rows_before), "total": int(rows_after)}
