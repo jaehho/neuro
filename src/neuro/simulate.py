@@ -258,7 +258,8 @@ def simulate(
             )
             if early_stop is not None:
                 rr_post = ro if ro is not None else float(y[R_POST_IDX])
-                if early_stop.update(t, rr_post):
+                w_mean = float(np.mean([y[_W_idx(i)] for i in range(n_pre)]))
+                if early_stop.update(t, rr_post, r_post=rr_post, w=w_mean):
                     break
 
     return recorder.finalize()
