@@ -1,16 +1,19 @@
-"""Parameters, state-vector layout, and dynamic key generation.
+"""Parameters and state-vector layout.
 
 The simulation state is a flat numpy vector laid out as
-``[V, y_post, r_post, R_bar, (I_s, x_pre, E, w) × n_pre]``.
-Use the index helpers (``_I_s_idx`` etc.) and ``n_state`` rather than
-hard-coding offsets.
+
+    [V, y_post, r_post, R_bar,  (I_s, x_pre, E, w) × n_pre]
+
+Use the index helpers below (``_I_s_idx`` etc.) and ``n_state``; never
+hard-code offsets.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 
-# ── Dynamic key generation ────────────────────────────────────────
+# ── Recorded series / spike key generation ────────────────────────
 
 def series_keys(n_pre: int) -> list[str]:
     keys = ["t", "V"]
@@ -31,14 +34,10 @@ def spike_keys(n_pre: int) -> list[str]:
     return [f"pre{i+1}_spike_times" for i in range(n_pre)] + ["post_spike_times"]
 
 
-SERIES_KEYS = series_keys(2)
-SPIKE_KEYS = spike_keys(2)
-
-
 # ── State vector layout: 4 shared + n_pre × 4 per-synapse ────────
-# Shared: [V, y_post, r_post, R_bar]
+# Shared:        [V, y_post, r_post, R_bar]
 # Per synapse i: [I_s, x_pre, E, w]
-# (r_pre is a constant set by Params.r_pre_rates, not a state variable.)
+# (r_pre is constant per Params.r_pre; not a state variable.)
 
 N_SHARED = 4
 N_PER_SYN = 4
@@ -50,7 +49,6 @@ RBAR_IDX = 3
 
 
 def _syn_base(i: int) -> int:
-    """Start index for synapse i (0-indexed) in the state vector."""
     return N_SHARED + i * N_PER_SYN
 
 
@@ -64,101 +62,116 @@ def n_state(n_pre: int) -> int:
     return N_SHARED + n_pre * N_PER_SYN
 
 
-# Backward-compatible aliases for n_pre=2
-I_S1_IDX = _I_s_idx(0)
-X_PRE1_IDX = _X_pre_idx(0)
-E1_IDX = _E_idx(0)
-W1_IDX = _W_idx(0)
-I_S2_IDX = _I_s_idx(1)
-X_PRE2_IDX = _X_pre_idx(1)
-E2_IDX = _E_idx(1)
-W2_IDX = _W_idx(1)
-N_STATE = n_state(2)
-
-
 @dataclass
 class Params:
-    # ── Simulation ──────────────────────────────────────────
+    # ── Simulation ──
     T: float = 20.0           # Total duration (s)
     dt: float = 1e-4          # Integration timestep (s); 0.1 ms
     seed: int = 1
     record_every: float = 1e-4
-    method: str = "euler"     # Integration method: "euler" | "rk4"
 
-    # ── Network topology ───────────────────────────────────
-    n_pre: int = 1            # Number of pre-synaptic neurons
+    # ── Network topology ──
+    n_pre: int = 1
 
-    # ── Pre-synaptic input (per-synapse tuples) ────────────
-    r_pre_rates: tuple[float, ...] | float = (20.0,)
-    poisson: bool = False     # Poisson spike trains (False = deterministic)
+    # ── Pre-synaptic input ──
+    r_pre: tuple[float, ...] = (20.0,)   # Pre firing rate (Hz), per synapse
+    poisson: bool = False     # True = Poisson; False = deterministic periodic
 
-    # ── LIF neuron (Dayan & Abbott 2001, Ch. 5) ────────────
+    # ── LIF neuron (Dayan & Abbott 2001, Ch. 5) ──
     tau_m: float = 0.02       # Membrane time constant (s)
-    E_L: float = -65.0        # Leak reversal potential (mV)
-    V_reset: float = -70.0    # Post-spike reset potential (mV)
+    E_L: float = -65.0        # Leak reversal (mV)
+    V_reset: float = -70.0    # Post-spike reset (mV)
     theta: float = -50.0      # Spike threshold (mV)
-    tau_ref: float = 0.003    # Absolute refractory period (s); 3 ms
-    V0: float = -65.0         # Initial membrane potential (mV)
-    ref_remaining0: float = 0.0
+    tau_ref: float = 0.003    # Absolute refractory period (s); caps r_post at 1/tau_ref
+    V0: float = -65.0
 
-    # ── Synaptic current ───────────────────────────────────
-    tau_s: float = 0.005      # Synaptic decay constant (s); 5 ms
-    R_m: float = 50.0         # Membrane input resistance (MΩ)
-    I_s0: tuple[float, ...] | float = (0.0,)
-    I_ext: float = 0.0        # Constant DC bias current to post-synaptic neuron (nA)
+    # ── Synaptic current ──
+    tau_s: float = 0.005      # Synaptic decay (s)
+    R_m: float = 50.0         # Membrane resistance (MΩ)
+    I_s0: tuple[float, ...] = (0.0,)
+    I_ext: float = 0.0        # DC bias to post (nA)
 
-    # ── STDP traces (Bi & Poo 1998) ───────────────────────
-    tau_plus: float = 0.02    # Pre→post LTP window (s); 20 ms
-    tau_minus: float = 0.02   # Post→pre LTD window (s); 20 ms
-    x_pre0: tuple[float, ...] | float = (0.0,)
+    # ── STDP traces (Bi & Poo 1998) ──
+    tau_plus: float = 0.02    # Pre→post LTP window (s)
+    tau_minus: float = 0.02   # Post→pre LTD window (s)
+    x_pre0: tuple[float, ...] = (0.0,)
     y_post0: float = 0.0
 
-    # ── Firing-rate estimation (r_post only; r_pre is constant) ──
-    tau_r: float = 0.5        # Exponential rate-trace decay (s)
+    # ── Post-rate estimation ──
+    tau_r_post: float = 0.5   # Exponential rate-trace decay for r_post (s)
     r_post0: float = 0.0
+    rate_mode: str = "exp"    # "exp" (trace) | "window" (spike count)
+    rate_window: float = 0.5  # (s), used when rate_mode == "window"
 
-    # ── Eligibility trace (Frémaux & Gerstner 2016) ───────
-    tau_e: float = 0.5        # Eligibility decay (s)
-    E0: tuple[float, ...] | float = (0.0,)
+    # ── Eligibility (Frémaux & Gerstner 2016) ──
+    tau_e: float = 0.5
+    E0: tuple[float, ...] = (0.0,)
 
-    # ── Reward baseline ────────────────────────────────────
-    tau_Rbar: float = 5.0     # Baseline tracking time constant (s)
+    # ── Reward baseline ──
+    tau_Rbar: float = 5.0
     R_bar0: float = 0.0
 
-    # ── Neuromodulator role (Frémaux & Gerstner 2016, Eq. 14) ──
-    neuromod_type: str = "covariance"  # covariance | gated | surprise | constant
+    # ── Three-factor learning rule (Frémaux & Gerstner 2016) ──
+    # M = R - R_bar  (covariance)  |  M = R  (gated)
+    M_rule: str = "covariance"
+    # R = -(r_post - r_target)^2  (target_rate)  |  R = r_target - r_post  (target_rate_linear)
+    R_rule: str = "target_rate"
+    r_target: float = 10.0
 
-    # ── Reward signal ──────────────────────────────────────
-    reward_signal: str = "target_rate"  # target_rate | target_rate_linear | biofeedback | contingent | constant
+    # ── Synaptic weights ──
+    w0: tuple[float, ...] = (2.0,)
+    wmax: float = 10.0
+    eta_plus: float = 1e-4
+    eta_minus: float = 1e-4
 
-    # ── Target-rate parameters (reward_signal="target_rate") ──
-    target_func: str = "fixed"         # fixed | linear | affine | quadratic | sqrt | log | sin | power
-    target_func_params: str = ""       # JSON dict of coefficients, e.g. '{"a": 0.3, "b": 2.0}'
-    r_target: float = 10.0             # Target rate-trace value for target_func="fixed"
-    alpha: float = 0.5                 # Slope for target_func="linear": target = α · r_pre
-
-    # ── Constant-reward diagnostic (reward_signal="constant") ──
-    R_const: float = 0.0               # Fixed scalar reward; bypasses any r_post / target dependence
-
-    # ── Reward delivery (biofeedback / contingent) ──────────
-    reward_delay: float = 1.0          # Delay from event to reward delivery (s)
-    reward_amount: float = 1.0         # Reward pulse magnitude
-    reward_tau: float = 0.2            # Reward pulse decay time constant (s)
-    coincidence_window: float = 0.02   # Target→post window for contingent reward (s); 20 ms
-
-    # ── Rate estimation mode (applies to r_post only) ──────
-    rate_mode: str = "exp"    # "exp" (trace) or "window" (spike count)
-    rate_window: float = 0.5  # Window duration for "window" mode (s)
-
-    # ── Synaptic weights (per-synapse tuples) ──────────────
-    w0: tuple[float, ...] | float = (2.0,)
-    wmax: float = 10.0        # Hard upper bound (soft bounds in STDP)
-    eta_plus: float = 1e-4    # LTP eligibility step size
-    eta_minus: float = 1e-4   # LTD eligibility step size
+    if TYPE_CHECKING:
+        # Constructor accepts scalars for the 5 broadcast fields; __post_init__
+        # converts them to tuples. The fields are typed as tuples (above) so
+        # internal reads are well-typed; this stub widens the public signature.
+        def __init__(
+            self,
+            *,
+            T: float = 20.0,
+            dt: float = 1e-4,
+            seed: int = 1,
+            record_every: float = 1e-4,
+            n_pre: int = 1,
+            r_pre: tuple[float, ...] | float = (20.0,),
+            poisson: bool = False,
+            tau_m: float = 0.02,
+            E_L: float = -65.0,
+            V_reset: float = -70.0,
+            theta: float = -50.0,
+            tau_ref: float = 0.003,
+            V0: float = -65.0,
+            tau_s: float = 0.005,
+            R_m: float = 50.0,
+            I_s0: tuple[float, ...] | float = (0.0,),
+            I_ext: float = 0.0,
+            tau_plus: float = 0.02,
+            tau_minus: float = 0.02,
+            x_pre0: tuple[float, ...] | float = (0.0,),
+            y_post0: float = 0.0,
+            tau_r_post: float = 0.5,
+            r_post0: float = 0.0,
+            rate_mode: str = "exp",
+            rate_window: float = 0.5,
+            tau_e: float = 0.5,
+            E0: tuple[float, ...] | float = (0.0,),
+            tau_Rbar: float = 5.0,
+            R_bar0: float = 0.0,
+            M_rule: str = "covariance",
+            R_rule: str = "target_rate",
+            r_target: float = 10.0,
+            w0: tuple[float, ...] | float = (2.0,),
+            wmax: float = 10.0,
+            eta_plus: float = 1e-4,
+            eta_minus: float = 1e-4,
+        ) -> None: ...
 
     def __post_init__(self):
         n = self.n_pre
-        for attr in ("r_pre_rates", "I_s0", "x_pre0", "E0", "w0"):
+        for attr in ("r_pre", "I_s0", "x_pre0", "E0", "w0"):
             val = getattr(self, attr)
             if isinstance(val, (int, float)):
                 object.__setattr__(self, attr, tuple(val for _ in range(n)))
@@ -171,25 +184,3 @@ class Params:
                     object.__setattr__(self, attr, tuple(fill for _ in range(n)))
                 else:
                     raise ValueError(f"{attr} has length {len(current)}, expected {n} (n_pre={n})")
-
-    # ── Backward-compatible properties for n_pre=2 callers ─
-    @property
-    def r_pre_rate_1(self) -> float: return self.r_pre_rates[0]
-    @property
-    def r_pre_rate_2(self) -> float: return self.r_pre_rates[1]
-    @property
-    def w1_0(self) -> float: return self.w0[0]
-    @property
-    def w2_0(self) -> float: return self.w0[1]
-    @property
-    def I_s1_0(self) -> float: return self.I_s0[0]
-    @property
-    def I_s2_0(self) -> float: return self.I_s0[1]
-    @property
-    def x_pre1_0(self) -> float: return self.x_pre0[0]
-    @property
-    def x_pre2_0(self) -> float: return self.x_pre0[1]
-    @property
-    def E1_0(self) -> float: return self.E0[0]
-    @property
-    def E2_0(self) -> float: return self.E0[1]

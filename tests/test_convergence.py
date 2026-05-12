@@ -28,7 +28,8 @@ def test_check_steady_state_drifting_signal():
     v = 5.0 + 0.5 * t  # 5 → 20 over 30 s
     out = check_steady_state(t, v, target=20.0)
     assert out["converged"] is False
-    assert out["delta"] > 1.0
+    delta = out["delta"]
+    assert isinstance(delta, float) and delta > 1.0
 
 
 def test_check_steady_state_window_underflow():

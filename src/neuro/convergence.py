@@ -93,7 +93,7 @@ def check_steady_state(
     *,
     target: float | None = None,
     criterion: ConvergenceCriterion | None = None,
-) -> dict[str, float | bool]:
+) -> dict[str, float | bool | str]:
     """Post-hoc check whether *values* settled (and optionally hit *target*).
 
     Returns a diagnostic dict with the half-means, half-to-half delta,
@@ -115,7 +115,7 @@ def check_steady_state(
     m1, m2 = halves
     flat = _passes_flatness(m1, m2, target, c)
     on_target = _passes_target(m2, target, c)
-    out: dict[str, float | bool] = {
+    out: dict[str, float | bool | str] = {
         "converged": flat and on_target,
         "flat": flat,
         "on_target": on_target,

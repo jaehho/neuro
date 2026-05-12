@@ -77,12 +77,8 @@ remote: ## Push, run CMD on $(REMOTE_HOST) in tmux:$(REMOTE_TMUX), stream live, 
 	ssh $(REMOTE_HOST) "bash -c 'while tmux has-session -t $(REMOTE_TMUX) 2>/dev/null; do sleep 10; done'"
 	rc=$$(ssh $(REMOTE_HOST) "bash -c 'cat /tmp/$(REMOTE_TMUX)-rc 2>/dev/null || echo 1'")
 	echo ">>> remote exited $$rc; syncing output/ back"
-	rsync -av --update --exclude='*.tmp' --exclude='runs.db' \
+	rsync -av --update --exclude='*.tmp' \
 		$(REMOTE_HOST):$(REMOTE_PROJ)/output/ ./output/ || true
-	if rsync -a $(REMOTE_HOST):$(REMOTE_PROJ)/output/runs.db /tmp/neuro_remote_runs.db 2>/dev/null; then
-		uv run neuro cache merge /tmp/neuro_remote_runs.db
-		rm -f /tmp/neuro_remote_runs.db
-	fi
 	exit $$rc
 
 remote-shell: ## SSH into $(REMOTE_HOST) and cd to the project directory

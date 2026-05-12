@@ -3,16 +3,13 @@ from __future__ import annotations
 import argparse
 from itertools import combinations
 
-import numpy as np
+import plotly.graph_objects as go
+import plotly.io as pio
+from plotly.subplots import make_subplots
 
-try:
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-except ImportError:
-    go = None
-    make_subplots = None
-
-from neuro.sim import Params, _plotly_values, load_plot_frame, simulate, write_plotly_html
+from neuro import Params, simulate
+from neuro.io import load_time_series_frame
+from neuro.plotting import _plotly_values
 
 
 VAR_NAMES = ["V", "I_s1", "x_pre1", "y_post", "E1", "r_pre1", "r_post", "R_bar", "w1"]
@@ -29,12 +26,9 @@ LABELS = {
 }
 
 
-def plot_pairwise_trajectories(rec_or_path, output_html: str = "trajectories.html", max_points: int = 30_000):
-    if go is None or make_subplots is None:
-        raise ImportError("plotly is required for interactive trajectory plots. Install it with `uv add plotly`.")
-
+def plot_pairwise_trajectories(parquet_path, output_html: str = "trajectories.html", max_points: int = 30_000):
     columns = ["t", *VAR_NAMES]
-    frame, _ = load_plot_frame(rec_or_path, columns=columns, max_points=max_points)
+    frame, _ = load_time_series_frame(parquet_path, columns=columns, max_points=max_points)
     arrays = {col: frame[col].to_numpy() for col in columns}
     t = arrays["t"]
     norm_t = (t - t.min()) / max(1e-12, (t.max() - t.min()))
@@ -72,12 +66,16 @@ def plot_pairwise_trajectories(rec_or_path, output_html: str = "trajectories.htm
         width=1800,
         title="Projected trajectories: pairwise state variables",
     )
-    return write_plotly_html(fig, output_html)
+    # plotly accepts a string mode ("directory", "cdn", …) here, but the type
+    # stubs declare `bool` — cast to silence pyright.
+    pio.write_html(fig, file=output_html, full_html=True,
+                   include_plotlyjs="directory",  # pyright: ignore[reportArgumentType]
+                   auto_open=False, validate=True)
+    return output_html
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Plot pairwise state trajectories with Plotly.")
-    parser.add_argument("--hdf5", type=str, default=None, help="Read from an HDF5 recording.")
     parser.add_argument("--parquet", type=str, default=None, help="Read from a Parquet recording.")
     parser.add_argument("--output-html", type=str, default="trajectories.html")
     parser.add_argument("--max-plot-points", type=int, default=30_000)
@@ -86,10 +84,13 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    params = Params(record_every=1e-3)
-    rec_or_path = args.parquet or args.hdf5 or simulate(params)
+    if args.parquet is not None:
+        parquet_path = args.parquet
+    else:
+        run = simulate(Params(record_every=1e-3), name="trajectories-scratch")
+        parquet_path = str(run.parquet)
     output_html = plot_pairwise_trajectories(
-        rec_or_path,
+        parquet_path,
         output_html=args.output_html,
         max_points=args.max_plot_points,
     )

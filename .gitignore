@@ -4,12 +4,8 @@ __pycache__/
 .env
 .envrc
 
-# Generated output
-output/*.parquet
-output/*.png
-output/*.html
-output/*.db
-output/sweeps/
+# Generated output (run journal: output/<name>/<ts>.{parquet,spikes.parquet,json})
+output/
 
 # Build artifacts
 *.egg-info/

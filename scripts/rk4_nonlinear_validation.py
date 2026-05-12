@@ -299,6 +299,7 @@ def main(*, convergence: bool = False) -> None:
     ]
     colors_conv = ["#264653", "#2a9d8f", "#e9c46a", "#e76f51"]
 
+    errors: list[float] = []
     for (name, f, y0, exact_fn, T), color in zip(systems_conv, colors_conv):
         errors = []
         for dt in dt_values:

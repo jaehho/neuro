@@ -18,23 +18,27 @@ app = marimo.App(width="medium")
 
 
 def _run_one(r_pre: float, r_target: float, T: float, w0: float = 2.0, eta: float = 3e-4) -> tuple[float, float]:
-    from neuro.sim import Params, simulate
+    import polars as pl
+
+    from neuro import Params, simulate
 
     p = Params(
-        T=T, dt=1e-4, method="rk4", seed=1,
-        n_pre=1, r_pre_rates=(r_pre,), poisson=False,
+        T=T, dt=1e-4, seed=1,
+        n_pre=1, r_pre=(r_pre,), poisson=False,
         w0=(w0,), eta_plus=eta, eta_minus=eta,
-        reward_signal="target_rate_linear",
-        neuromod_type="gated",
-        target_func="fixed", r_target=r_target,
+        R_rule="target_rate_linear",
+        M_rule="gated",
+        r_target=r_target,
         rate_mode="window", rate_window=0.5,
         record_every=1e-3,
     )
-    rec = simulate(p, progress=iter)
+    run = simulate(p, name=f"linear-gated-map/cell_rpre{r_pre:g}_rtarget{r_target:g}", progress=iter)
+    post = pl.read_parquet(run.spikes).filter(pl.col("spike_type") == "post")["t"].to_numpy()
     half = p.T / 2
-    late = rec["post_spike_times"][rec["post_spike_times"] >= half]
+    late = post[post >= half]
     r_late = len(late) / (p.T - half) if p.T > half else 0.0
-    return r_late, float(rec["w1"][-1])
+    w_final = float(pl.read_parquet(run.parquet, columns=["w1"])["w1"][-1])
+    return r_late, w_final
 
 
 def _worker(args: tuple[int, int, float, float, float]) -> tuple[int, int, float, float]:
@@ -192,7 +196,7 @@ def _save_outputs(result: dict, *, n: int, max_rate: float, T: float, stem: str 
     import matplotlib.pyplot as plt
     import polars as pl
 
-    out_dir = Path("output/sweeps")
+    out_dir = Path("output/linear-gated-map")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []

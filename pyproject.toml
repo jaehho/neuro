@@ -5,20 +5,14 @@ description = "Neuromodulated STDP simulation and analysis"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "click>=8.3.1",
-    "h5py>=3.14.0",
     "matplotlib>=3.10.8",
     "numpy>=2.4.1",
     "plotly>=6.0.1",
     "polars>=1.33.1",
     "pyarrow>=23.0.1",
-    "questionary>=2.1.1",
     "scipy>=1.17.0",
     "tqdm>=4.67.3",
 ]
-
-[project.scripts]
-neuro = "neuro.cli:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -34,8 +28,14 @@ output_max_bytes = 10_000_000
 pythonPlatform = "Linux"
 venvPath = "."
 venv = ".venv"
+typeCheckingMode = "standard"
 reportUnusedVariable = "warning"
 reportUnusedImport = "warning"
+
+# Marimo cells emit their last expression as the cell output.
+[[tool.pyright.executionEnvironments]]
+root = "notebooks"
+reportUnusedExpression = "none"
 
 [dependency-groups]
 dev = [
