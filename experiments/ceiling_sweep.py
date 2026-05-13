@@ -33,8 +33,8 @@ OUT = Path("output") / SWEEP
 
 BASE = Params()
 
-X_GRID = np.geomspace(5.0, 500.0, 10)   # r_pre (Hz)
-Y_GRID = np.geomspace(5.0, 500.0, 10)   # r_target (Hz); crosses 1/τ_ref ≈ 333 Hz
+X_GRID = np.linspace(5.0, 500.0, 15)    # r_pre (Hz)
+Y_GRID = np.linspace(5.0, 500.0, 15)    # r_target (Hz); crosses 1/τ_ref ≈ 333 Hz
 
 
 def _silent(it):
@@ -76,8 +76,6 @@ def _heatmap(df: pl.DataFrame, png_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(7, 6), constrained_layout=True)
     im = ax.pcolormesh(X_GRID, Y_GRID, err, cmap="viridis", shading="auto")
     fig.colorbar(im, ax=ax, label="|<r_post> − target| (Hz)")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
     ax.set_xlabel("r_pre (Hz)")
     ax.set_ylabel("r_target (Hz)")
     ax.axhline(1.0 / BASE.tau_ref, color="white", linestyle="--", linewidth=1, alpha=0.6)

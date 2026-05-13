@@ -25,14 +25,23 @@ from neuro.io import load_time_series_frame
 from neuro.params import Params
 
 
-def _params_block(p: Params) -> str:
+def _params_block(p: Params, highlight: set[str] | None = None) -> str:
+    """Collapsible parameters block; field names in `highlight` get a yellow background."""
     items = list(asdict(p).items())
     width = max(len(k) for k, _ in items)
-    body = "\n".join(f"{k.ljust(width)} = {v!r}" for k, v in items)
+    hi = highlight or set()
+    lines = []
+    for k, v in items:
+        line = html_module.escape(f"{k.ljust(width)} = {v!r}")
+        if k in hi:
+            line = f'<span style="background:#fff3a0;">{line}</span>'
+        lines.append(line)
+    body = "\n".join(lines)
+    summary = "Parameters" if not hi else f"Parameters ({len(hi)} differ from defaults)"
     return (
         '<details style="font-family:monospace;padding:8px 12px;border-bottom:1px solid #ddd;">'
-        '<summary style="cursor:pointer;font-weight:bold;">Parameters</summary>'
-        f'<pre style="margin:8px 0 0 0;">{html_module.escape(body)}</pre>'
+        f'<summary style="cursor:pointer;font-weight:bold;">{summary}</summary>'
+        f'<pre style="margin:8px 0 0 0;">{body}</pre>'
         '</details>'
     )
 
@@ -44,7 +53,6 @@ def all_plot_variables(p: Params) -> list[str]:
     v += [f"x_pre{i+1}" for i in range(n_pre)]
     v.append("y_post")
     v += [f"E{i+1}" for i in range(n_pre)]
-    v += [f"r_pre{i+1}" for i in range(n_pre)]
     v.append("r_post")
     # In gated mode M = R directly, so R_bar is unused and M duplicates R.
     v += ["R"] if p.M_rule == "gated" else ["R", "R_bar", "M"]
@@ -60,7 +68,6 @@ def variable_titles(n_pre: int) -> dict[str, str]:
         titles[f"I_s{i+1}"] = f"Synaptic current I_s{i+1}{suffix}"
         titles[f"x_pre{i+1}"] = f"STDP pre-trace x_pre{i+1}"
         titles[f"E{i+1}"] = f"Eligibility trace E{i+1}{suffix}"
-        titles[f"r_pre{i+1}"] = f"Pre{i+1} firing rate r_pre{i+1}"
         titles[f"w{i+1}"] = f"Weight w{i+1}{suffix}"
     titles["y_post"] = "STDP post-trace y_post"
     titles["r_post"] = "Post-synaptic firing rate r_post"

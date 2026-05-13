@@ -4,6 +4,7 @@ from __future__ import annotations
 from neuro import Params, simulate
 
 p = Params(
+    T=5000,
     r_pre=(10.0,),
     r_target=24.5,
 )
@@ -13,4 +14,3 @@ if __name__ == "__main__":
     print(f"  parquet: {run.parquet}")
     print(f"  duration: {run.duration_s:.1f}s, rows: {run.rows_written}")
     run.serve()
-

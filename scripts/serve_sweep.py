@@ -1,9 +1,11 @@
 """Interactive sweep viewer: clickable heatmap + per-cell zoom plots.
 
-    uv run python scripts/serve_sweep.py
+    uv run python scripts/serve_sweep.py                            # list sweeps
+    uv run python scripts/serve_sweep.py <sweep>                    # serve latest
+    uv run python scripts/serve_sweep.py output/<sweep>/<ts>        # serve that ts
 
-Edit ``SWEEP`` below. The script picks the most recent
-``output/<SWEEP>/<YYYYMMDD_HHMMSS>/`` directory and serves:
+The script picks the most recent ``output/<sweep>/<YYYYMMDD_HHMMSS>/``
+directory (or the one passed as an argument) and serves:
 
   - ``GET /``                          the heatmap (same data as summary.png)
   - ``GET /cell/iJ_jJ/``               the cell's zoom-adaptive viewer
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import fields
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,27 +34,51 @@ from neuro import Run, load_latest
 from neuro.params import Params, _PER_SYN_FIELDS
 from neuro.plotting import _build_figure, _params_block, _plotly_js_path
 
-# ── Edit ──────────────────────────────────────────────────────────
-# SWEEP names a directory under output/; the script auto-picks the most
-# recent output/<SWEEP>/<YYYYMMDD_HHMMSS>/ (the latest run of that sweep).
-SWEEP = "low-rate-sweep"
 HOST = "127.0.0.1"
 PORT = 8050
 MAX_POINTS_DEFAULT = 40_000
-# ─────────────────────────────────────────────────────────────────────
+OUTPUT_DIR = Path("output")
+
+
+def _list_sweeps(output_dir: Path) -> list[tuple[str, Path]]:
+    """All ``(sweep_name, latest_ts_dir)`` under ``output_dir``, newest first."""
+    found: list[tuple[str, Path]] = []
+    if not output_dir.is_dir():
+        return found
+    for sweep_dir in sorted(output_dir.iterdir()):
+        if not sweep_dir.is_dir():
+            continue
+        ts_dirs = sorted(d for d in sweep_dir.iterdir()
+                         if d.is_dir() and (d / "summary.parquet").exists())
+        if ts_dirs:
+            found.append((sweep_dir.name, ts_dirs[-1]))
+    found.sort(key=lambda nt: nt[1].name, reverse=True)
+    return found
 
 
 def _latest_sweep_run(sweep_dir: Path) -> Path:
     if not sweep_dir.is_dir():
         raise FileNotFoundError(
             f"{sweep_dir} does not exist — run the sweep first, e.g.\n"
-            f"    uv run python experiments/{SWEEP.replace('-', '_')}.py"
+            f"    uv run python experiments/{sweep_dir.name.replace('-', '_')}.py"
         )
     candidates = sorted(d for d in sweep_dir.iterdir()
                         if d.is_dir() and (d / "summary.parquet").exists())
     if not candidates:
         raise FileNotFoundError(f"No <ts>/summary.parquet under {sweep_dir}")
     return candidates[-1]
+
+
+def _resolve_sweep_run(arg: str) -> Path:
+    """Map a CLI arg to a sweep run directory.
+
+    Accepts a sweep name (``low-rate-sweep``) or a path to a specific
+    timestamped directory (``output/low-rate-sweep/20260513_110517``).
+    """
+    p = Path(arg)
+    if p.is_dir() and (p / "summary.parquet").exists():
+        return p
+    return _latest_sweep_run(OUTPUT_DIR / arg)
 
 
 _PER_SYN = frozenset(_PER_SYN_FIELDS)
@@ -129,10 +156,10 @@ def _heatmap_figure(summary: pl.DataFrame, sweep_label: str) -> go.Figure:
     return fig
 
 
-def _heatmap_html(fig: go.Figure) -> str:
+def _heatmap_html(fig: go.Figure, sweep: str) -> str:
     fig_json = json.dumps(fig.to_plotly_json())
     return f"""<!doctype html>
-<html><head><meta charset="utf-8"/><title>{SWEEP} sweep</title>
+<html><head><meta charset="utf-8"/><title>{sweep} sweep</title>
 <style>
   html,body{{margin:0;background:#fff;font-family:sans-serif;}}
   #plot{{width:100vw;height:100vh;}}
@@ -155,7 +182,7 @@ def _heatmap_html(fig: go.Figure) -> str:
 
 
 def _cell_html(cell_key: str, p: Params) -> str:
-    params_block = _params_block(p)
+    params_block = _params_block(p, highlight=set(_diff_kwargs(p)))
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"/><title>{cell_key}</title>
 <style>
@@ -257,11 +284,23 @@ def _cell_html(cell_key: str, p: Params) -> str:
 
 
 def main() -> None:
-    sweep_run_dir = _latest_sweep_run(Path("output") / SWEEP)
+    args = sys.argv[1:]
+    if not args:
+        sweeps = _list_sweeps(OUTPUT_DIR)
+        if not sweeps:
+            print(f"No sweeps under {OUTPUT_DIR}/")
+            sys.exit(1)
+        print(f"{'sweep':<30} latest run")
+        for name, ts_dir in sweeps:
+            print(f"{name:<30} {ts_dir}")
+        sys.exit(0)
+
+    sweep_run_dir = _resolve_sweep_run(args[0])
+    sweep = sweep_run_dir.parent.name
     sweep_ts = sweep_run_dir.name
     summary = pl.read_parquet(sweep_run_dir / "summary.parquet")
-    sweep_label = f"{SWEEP} {sweep_ts}"
-    heatmap_page = _heatmap_html(_heatmap_figure(summary, sweep_label)).encode("utf-8")
+    sweep_label = f"{sweep} {sweep_ts}"
+    heatmap_page = _heatmap_html(_heatmap_figure(summary, sweep_label), sweep).encode("utf-8")
     js_bytes = _plotly_js_path().read_bytes()
 
     cell_prefix = re.compile(r"^/cell/(\d{2})_(\d{2})")
@@ -271,7 +310,7 @@ def main() -> None:
     def _load_cell(i: int, j: int) -> Run:
         key = (i, j)
         if key not in cell_cache:
-            cell_cache[key] = load_latest(f"{SWEEP}/{sweep_ts}/cell_{i:02d}_{j:02d}")
+            cell_cache[key] = load_latest(f"{sweep}/{sweep_ts}/cell_{i:02d}_{j:02d}")
         return cell_cache[key]
 
     class Handler(BaseHTTPRequestHandler):
@@ -316,7 +355,7 @@ def main() -> None:
                     return
                 if tail in ("/scaffold", "/scaffold/"):
                     code = _scaffold_code(run.params, f"{i:02d}_{j:02d}",
-                                          SWEEP, sweep_ts)
+                                          sweep, sweep_ts)
                     self._send(json.dumps({"code": code}).encode("utf-8"),
                                "application/json; charset=utf-8")
                     return
