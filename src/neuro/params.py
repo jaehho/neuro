@@ -9,7 +9,7 @@ hard-code offsets.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 
 # ── Recorded series / spike key generation ────────────────────────
@@ -123,6 +123,7 @@ class Params:
     # ── Synaptic weights ──
     w0: tuple[float, ...] = (2.0,)
     wmax: float = 10.0
+    bound_w: bool = False  # if False: drop wmax soft bound + hard clip (lower bound at 0 stays)
     eta_plus: float = 1e-4
     eta_minus: float = 1e-4
 
@@ -139,3 +140,23 @@ class Params:
                     f"{attr} has length {len(val)}, expected {self.n_pre} (n_pre={self.n_pre})"
                 )
             object.__setattr__(self, attr, val)
+
+
+def diff_from_defaults(p: Params) -> dict[str, object]:
+    """Fields of `p` that differ from `Params()`, accounting for per-syn broadcast.
+
+    A per-synapse tuple whose entries all match the length-1 default scalar is
+    treated as "no diff" — `Params(n_pre=…)` would reproduce it via broadcast.
+    """
+    base = Params()
+    out: dict[str, object] = {}
+    for f in fields(Params):
+        cell_val = getattr(p, f.name)
+        base_val = getattr(base, f.name)
+        if f.name in _PER_SYN_FIELDS:
+            if all(v == base_val[0] for v in cell_val):
+                continue
+            out[f.name] = cell_val
+        elif cell_val != base_val:
+            out[f.name] = cell_val
+    return out

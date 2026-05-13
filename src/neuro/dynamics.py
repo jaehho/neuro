@@ -79,7 +79,8 @@ def _rhs(y: np.ndarray, p: Params, *, voltage_active: bool,
 
     rhs = np.zeros_like(y)
     if voltage_active:
-        I_total = (np.clip(w, 0.0, p.wmax) * I_s).sum() + p.I_ext
+        w_eff = np.clip(w, 0.0, p.wmax) if p.bound_w else np.maximum(w, 0.0)
+        I_total = (w_eff * I_s).sum() + p.I_ext
         rhs[V_IDX] = (-(y[V_IDX] - p.E_L) + p.R_m * I_total) / p.tau_m
 
     rhs[Y_POST_IDX] = -y[Y_POST_IDX] / p.tau_minus
@@ -114,7 +115,7 @@ def _advance_state(y: np.ndarray, dt: float, p: Params, *, method: str,
         raise ValueError(f"Unknown integration method: {method!r}")
 
     _, _, _, w = _per_syn(out, p.n_pre)
-    w[:] = np.clip(w, 0.0, p.wmax)
+    w[:] = np.clip(w, 0.0, p.wmax) if p.bound_w else np.maximum(w, 0.0)
     if not voltage_active:
         out[V_IDX] = p.V_reset
     return out

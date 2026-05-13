@@ -240,7 +240,8 @@ def simulate(
                 y_mid[Y_POST_IDX] += 1.0
                 y_mid[R_POST_IDX] += 1.0 / p.tau_r_post
                 for i in range(n_pre):
-                    y_mid[E_idx(i)] += p.eta_plus * (p.wmax - y_mid[W_idx(i)]) * y_mid[X_pre_idx(i)]
+                    soft_bound = (p.wmax - y_mid[W_idx(i)]) if p.bound_w else 1.0
+                    y_mid[E_idx(i)] += p.eta_plus * soft_bound * y_mid[X_pre_idx(i)]
 
                 if use_window:
                     post_spike_buf.append(spike_t)

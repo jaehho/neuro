@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import re
 import sys
-from dataclasses import fields
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,7 +30,7 @@ import plotly.graph_objects as go
 import polars as pl
 
 from neuro import Run, load_latest
-from neuro.params import Params, _PER_SYN_FIELDS
+from neuro.params import Params, diff_from_defaults
 from neuro.plotting import _build_figure, _params_block, _plotly_js_path
 
 HOST = "127.0.0.1"
@@ -81,33 +80,8 @@ def _resolve_sweep_run(arg: str) -> Path:
     return _latest_sweep_run(OUTPUT_DIR / arg)
 
 
-_PER_SYN = frozenset(_PER_SYN_FIELDS)
-
-
-def _diff_kwargs(p: Params) -> dict[str, object]:
-    """Fields of `p` that differ from `Params()`, accounting for per-syn broadcast.
-
-    For per-synapse tuple fields, a tuple of length `n_pre` whose entries all
-    equal the default scalar is treated as "no diff" (it would be reproduced
-    by Params(n_pre=…) via __post_init__ broadcasting).
-    """
-    base = Params()
-    out: dict[str, object] = {}
-    for f in fields(Params):
-        cell_val = getattr(p, f.name)
-        base_val = getattr(base, f.name)
-        if f.name in _PER_SYN:
-            default_scalar = base_val[0]
-            if all(v == default_scalar for v in cell_val):
-                continue
-            out[f.name] = cell_val
-        elif cell_val != base_val:
-            out[f.name] = cell_val
-    return out
-
-
 def _scaffold_code(p: Params, cell_key: str, sweep_name: str, sweep_ts: str) -> str:
-    diff = _diff_kwargs(p)
+    diff = diff_from_defaults(p)
     if not diff:
         params_call = "p = Params()"
     else:
@@ -182,7 +156,7 @@ def _heatmap_html(fig: go.Figure, sweep: str) -> str:
 
 
 def _cell_html(cell_key: str, p: Params) -> str:
-    params_block = _params_block(p, highlight=set(_diff_kwargs(p)))
+    params_block = _params_block(p, highlight=set(diff_from_defaults(p)))
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"/><title>{cell_key}</title>
 <style>

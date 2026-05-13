@@ -22,7 +22,7 @@ import plotly.io as pio
 from plotly.subplots import make_subplots
 
 from neuro.io import load_time_series_frame
-from neuro.params import Params
+from neuro.params import Params, diff_from_defaults
 
 
 def _params_block(p: Params, highlight: set[str] | None = None) -> str:
@@ -197,7 +197,7 @@ def serve_zoom(
         raise FileNotFoundError(f"Parquet does not exist: {source}")
     js_path = _plotly_js_path()
 
-    params_block = _params_block(p)
+    params_block = _params_block(p, highlight=set(diff_from_defaults(p)))
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"/><title>neuro</title>
 <style>html,body {{ margin:0; background:#fff; }} #plot {{ width:100%; height:calc(100vh - 60px); }}</style>
