@@ -31,27 +31,10 @@ from neuro import Params, simulate
 SWEEP = "ceiling-sweep"
 OUT = Path("output") / SWEEP
 
-BASE = Params(
-    T=60.0, dt=1e-4, seed=1, record_every=1e-3,
-    n_pre=1,
-    r_pre=(20.0,),                      # placeholder, overridden below
-    poisson=True,
+BASE = Params()
 
-    # Linear-gated three-factor rule
-    M_rule="gated",
-    R_rule="target_rate_linear",
-
-    rate_mode="window",                 # window estimator stays steady when post fires fast
-    rate_window=0.5,
-
-    w0=(5.0,),                          # higher initial weight encourages saturation
-    wmax=10.0,
-    eta_plus=1e-4,
-    eta_minus=1e-4,
-)
-
-X_GRID = np.geomspace(5.0, 1500.0, 14)   # r_pre (Hz)
-Y_GRID = np.geomspace(5.0, 1000.0, 14)   # r_target (Hz); crosses 1/τ_ref ≈ 333 Hz
+X_GRID = np.geomspace(5.0, 500.0, 10)   # r_pre (Hz)
+Y_GRID = np.geomspace(5.0, 500.0, 10)   # r_target (Hz); crosses 1/τ_ref ≈ 333 Hz
 
 
 def _silent(it):
@@ -68,10 +51,11 @@ def run_cell(args: tuple[int, int, float, float, str]) -> dict:
     spk = pl.read_parquet(run.spikes).filter(pl.col("spike_type") == "post")
     df = pl.read_parquet(run.parquet, columns=["t", "w1"])
     t_end = float(df["t"][-1])
-    half = max(t_end / 2.0, 1.0)
+    window_s = 10.0 * (p.rate_window if p.rate_mode == "window" else p.tau_r_post)
+    late_start = max(t_end - window_s, 0.0)
     late = spk["t"].to_numpy()
-    late = late[late >= half]
-    r_post_late = float(len(late)) / max(t_end - half, 1e-6)
+    late = late[late >= late_start]
+    r_post_late = float(len(late)) / max(t_end - late_start, 1e-6)
 
     return {
         "i": i, "j": j,

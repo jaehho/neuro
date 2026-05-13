@@ -1,18 +1,16 @@
-"""Baseline 1-pre → 1-post run with default Params.
-
-The canonical Fetz-style demo: a single neuron learning to track a fixed
-target firing rate via three-factor STDP. Run with
-
-    uv run python experiments/baseline.py
-"""
+"""Scratch experiment from low-rate-sweep/20260513_110517/cell_29_00."""
 from __future__ import annotations
 
 from neuro import Params, simulate
 
-p = Params(r_pre=(21.0,), r_target=10)
+p = Params(
+    r_pre=(10.0,),
+    r_target=24.5,
+)
 
 if __name__ == "__main__":
-    run = simulate(p, name="baseline")
+    run = simulate(p, name="scratch")
     print(f"  parquet: {run.parquet}")
     print(f"  duration: {run.duration_s:.1f}s, rows: {run.rows_written}")
-    run.serve()  # opens http://127.0.0.1:8050/
+    run.serve()
+

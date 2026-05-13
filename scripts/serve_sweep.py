@@ -5,9 +5,11 @@
 Edit ``SWEEP`` below. The script picks the most recent
 ``output/<SWEEP>/<YYYYMMDD_HHMMSS>/`` directory and serves:
 
-  - ``GET /``                       the heatmap (same data as summary.png)
-  - ``GET /cell/iJ_jJ/``            the cell's zoom-adaptive viewer
-  - ``GET /cell/iJ_jJ/figure?x0=…`` figure JSON for pan/zoom
+  - ``GET /``                          the heatmap (same data as summary.png)
+  - ``GET /cell/iJ_jJ/``               the cell's zoom-adaptive viewer
+  - ``GET /cell/iJ_jJ/figure?x0=…``    figure JSON for pan/zoom
+  - ``GET /cell/iJ_jJ/scaffold``       JSON {code: "..."} for the
+                                       "Generate experiment" modal
 
 Clicking a cell on the heatmap opens that cell's viewer in a new tab.
 Ctrl-C tears the server down.
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import fields
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -25,10 +28,12 @@ import plotly.graph_objects as go
 import polars as pl
 
 from neuro import Run, load_latest
-from neuro.params import Params
+from neuro.params import Params, _PER_SYN_FIELDS
 from neuro.plotting import _build_figure, _params_block, _plotly_js_path
 
-# ── Edit me ──────────────────────────────────────────────────────────
+# ── Edit ──────────────────────────────────────────────────────────
+# SWEEP names a directory under output/; the script auto-picks the most
+# recent output/<SWEEP>/<YYYYMMDD_HHMMSS>/ (the latest run of that sweep).
 SWEEP = "low-rate-sweep"
 HOST = "127.0.0.1"
 PORT = 8050
@@ -47,6 +52,54 @@ def _latest_sweep_run(sweep_dir: Path) -> Path:
     if not candidates:
         raise FileNotFoundError(f"No <ts>/summary.parquet under {sweep_dir}")
     return candidates[-1]
+
+
+_PER_SYN = frozenset(_PER_SYN_FIELDS)
+
+
+def _diff_kwargs(p: Params) -> dict[str, object]:
+    """Fields of `p` that differ from `Params()`, accounting for per-syn broadcast.
+
+    For per-synapse tuple fields, a tuple of length `n_pre` whose entries all
+    equal the default scalar is treated as "no diff" (it would be reproduced
+    by Params(n_pre=…) via __post_init__ broadcasting).
+    """
+    base = Params()
+    out: dict[str, object] = {}
+    for f in fields(Params):
+        cell_val = getattr(p, f.name)
+        base_val = getattr(base, f.name)
+        if f.name in _PER_SYN:
+            default_scalar = base_val[0]
+            if all(v == default_scalar for v in cell_val):
+                continue
+            out[f.name] = cell_val
+        elif cell_val != base_val:
+            out[f.name] = cell_val
+    return out
+
+
+def _scaffold_code(p: Params, cell_key: str, sweep_name: str, sweep_ts: str) -> str:
+    diff = _diff_kwargs(p)
+    if not diff:
+        params_call = "p = Params()"
+    else:
+        kw_lines = "\n".join(f"    {k}={v!r}," for k, v in diff.items())
+        params_call = f"p = Params(\n{kw_lines}\n)"
+    return (
+        f'"""Scratch experiment from {sweep_name}/{sweep_ts}/cell_{cell_key}."""\n'
+        "from __future__ import annotations\n"
+        "\n"
+        "from neuro import Params, simulate\n"
+        "\n"
+        f"{params_call}\n"
+        "\n"
+        'if __name__ == "__main__":\n'
+        '    run = simulate(p, name="scratch")\n'
+        '    print(f"  parquet: {run.parquet}")\n'
+        '    print(f"  duration: {run.duration_s:.1f}s, rows: {run.rows_written}")\n'
+        "    run.serve()\n"
+    )
 
 
 def _heatmap_figure(summary: pl.DataFrame, sweep_label: str) -> go.Figure:
@@ -105,14 +158,62 @@ def _cell_html(cell_key: str, p: Params) -> str:
     params_block = _params_block(p)
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"/><title>{cell_key}</title>
-<style>html,body{{margin:0;background:#fff;}}#plot{{width:100%;height:calc(100vh - 60px);}}</style>
+<style>
+  html,body{{margin:0;background:#fff;font-family:sans-serif;}}
+  #plot{{width:100%;height:calc(100vh - 60px);}}
+  #gen-btn{{position:fixed;top:10px;right:16px;padding:6px 12px;
+           font-size:13px;cursor:pointer;background:#f3f3f3;
+           border:1px solid #ccc;border-radius:3px;z-index:10;}}
+  #gen-btn:hover{{background:#e6e6e6;}}
+  #modal{{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);
+         z-index:100;align-items:center;justify-content:center;}}
+  #modal.open{{display:flex;}}
+  #modal-content{{background:#fff;width:min(720px,90vw);max-height:80vh;
+                 display:flex;flex-direction:column;border-radius:4px;
+                 box-shadow:0 4px 20px rgba(0,0,0,0.25);}}
+  #modal-head{{display:flex;justify-content:space-between;align-items:center;
+              padding:10px 14px;border-bottom:1px solid #e6e6e6;}}
+  #modal-head h3{{margin:0;font-size:14px;}}
+  #modal-head button{{margin-left:6px;padding:4px 10px;font-size:12px;
+                     cursor:pointer;}}
+  #code{{margin:0;padding:14px;overflow:auto;font-family:monospace;
+        font-size:12px;white-space:pre;background:#fafafa;}}
+</style>
 </head><body>{params_block}<div id="plot"></div>
+<button id="gen-btn">Generate experiment</button>
+<div id="modal"><div id="modal-content">
+  <div id="modal-head">
+    <h3>Scratch experiment for cell {cell_key}</h3>
+    <span><button id="copy-btn">Copy</button><button id="close-btn">Close</button></span>
+  </div>
+  <pre id="code"></pre>
+</div></div>
 <script src="/plotly.min.js"></script>
 <script>
   const BASE_MAX_POINTS = {MAX_POINTS_DEFAULT};
   const FIGURE_URL = "/cell/{cell_key}/figure";
+  const SCAFFOLD_URL = "/cell/{cell_key}/scaffold";
   const plotDiv = document.getElementById("plot");
+  const modal = document.getElementById("modal");
+  const codeEl = document.getElementById("code");
   let isUpdating = false, pendingTimer = null, attached = false;
+
+  document.getElementById("gen-btn").addEventListener("click", async () => {{
+    const r = await fetch(SCAFFOLD_URL);
+    if (!r.ok) {{ alert("scaffold failed: " + r.status); return; }}
+    const data = await r.json();
+    codeEl.textContent = data.code;
+    modal.classList.add("open");
+  }});
+  document.getElementById("copy-btn").addEventListener("click", async () => {{
+    try {{ await navigator.clipboard.writeText(codeEl.textContent); }}
+    catch (e) {{ alert("copy failed: " + e); }}
+  }});
+  document.getElementById("close-btn").addEventListener("click",
+    () => modal.classList.remove("open"));
+  modal.addEventListener("click", e => {{
+    if (e.target === modal) modal.classList.remove("open");
+  }});
 
   function rangeFromEvent(e) {{
     if ("xaxis.range[0]" in e && "xaxis.range[1]" in e)
@@ -211,6 +312,12 @@ def main() -> None:
                     mx = int(q.get("max_points", [str(MAX_POINTS_DEFAULT)])[0])
                     fig = _build_figure(run.parquet, run.params, mx, x0, x1, None)
                     self._send(json.dumps(fig.to_plotly_json()).encode("utf-8"),
+                               "application/json; charset=utf-8")
+                    return
+                if tail in ("/scaffold", "/scaffold/"):
+                    code = _scaffold_code(run.params, f"{i:02d}_{j:02d}",
+                                          SWEEP, sweep_ts)
+                    self._send(json.dumps({"code": code}).encode("utf-8"),
                                "application/json; charset=utf-8")
                     return
                 if tail in ("", "/"):
