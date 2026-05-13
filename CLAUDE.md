@@ -62,5 +62,5 @@ Cross-cutting facts:
 
 - Tabular work uses **polars**, not pandas.
 - Long simulations stream to parquet; the zoom viewer re-decimates from disk on every scroll-zoom, so plotting million-row recordings stays responsive.
-- Sweep cells live under `output/<sweep-name>/cell_iJ_jJ/`. The summary parquet (heatmap data) and PNG live at `output/<sweep-name>/summary.{parquet,png}`.
+- Each sweep run is self-contained under `output/<sweep>/<YYYYMMDD_HHMMSS>/`: `summary.{parquet,png}`, `base_params.json`, and one `cell_iJ_jJ/<run-ts>.parquet` (+ `.spikes.parquet`, `.json`) per grid point.
 - Before writing a plot or analysis script, check whether `simulate.py` or `plotting.py` already exposes what you need.

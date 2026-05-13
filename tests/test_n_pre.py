@@ -11,22 +11,17 @@ from neuro import Params, simulate
 from neuro.dynamics import _advance_state, _init_state, _rhs
 from neuro.params import (
     V_IDX,
-    _I_s_idx,
-    _W_idx,
+    I_s_idx,
+    W_idx,
     n_state,
     series_keys,
     spike_keys,
 )
 
 
-# ── Params construction and broadcasting ───────────────────────────
+# ── Params construction and validation ─────────────────────────────
 
-class TestParamsBroadcasting:
-    def test_scalar_broadcast(self) -> None:
-        p = Params(n_pre=5, r_pre=20.0, w0=3.0)
-        assert p.r_pre == (20.0, 20.0, 20.0, 20.0, 20.0)
-        assert p.w0 == (3.0, 3.0, 3.0, 3.0, 3.0)
-
+class TestParamsValidation:
     def test_tuple_passthrough(self) -> None:
         p = Params(n_pre=3, r_pre=(10.0, 20.0, 30.0), w0=(1.0, 2.0, 3.0))
         assert p.r_pre == (10.0, 20.0, 30.0)
@@ -37,7 +32,7 @@ class TestParamsBroadcasting:
             Params(n_pre=2, r_pre=(10.0, 20.0, 30.0))
 
     def test_n_pre_1(self) -> None:
-        p = Params(n_pre=1, r_pre=15.0, w0=1.5)
+        p = Params(n_pre=1, r_pre=(15.0,), w0=(1.5,))
         assert p.r_pre == (15.0,)
         assert p.w0 == (1.5,)
         assert len(p.I_s0) == 1
@@ -57,19 +52,19 @@ class TestStateVectorLayout:
         assert n_state(n_pre) == expected_size
 
     def test_init_state_n1(self) -> None:
-        p = Params(n_pre=1, V0=-60.0, w0=3.0, I_s0=0.5)
+        p = Params(n_pre=1, V0=-60.0, w0=(3.0,), I_s0=(0.5,))
         y = _init_state(p)
         assert len(y) == n_state(1)
         assert y[V_IDX] == -60.0
-        assert y[_W_idx(0)] == 3.0
-        assert y[_I_s_idx(0)] == 0.5
+        assert y[W_idx(0)] == 3.0
+        assert y[I_s_idx(0)] == 0.5
 
     def test_init_state_n5(self) -> None:
         p = Params(n_pre=5, w0=(1.0, 2.0, 3.0, 4.0, 5.0))
         y = _init_state(p)
         assert len(y) == n_state(5)
         for i in range(5):
-            assert y[_W_idx(i)] == float(i + 1)
+            assert y[W_idx(i)] == float(i + 1)
 
 
 # ── Dynamic key generation ─────────────────────────────────────────
@@ -103,16 +98,16 @@ class TestKeyGeneration:
 
 class TestODEN1:
     def test_rhs_equilibrium(self) -> None:
-        p = Params(n_pre=1, V0=-65.0, E_L=-65.0, w0=1.0,
-                   I_s0=0.0, x_pre0=0.0, E0=0.0,
+        p = Params(n_pre=1, V0=-65.0, E_L=-65.0, w0=(1.0,),
+                   I_s0=(0.0,), x_pre0=(0.0,), E0=(0.0,),
                    r_post0=0.0, R_bar0=0.0, y_post0=0.0, r_target=0.0)
         y = _init_state(p)
         rhs = _rhs(y, p, voltage_active=True)
         np.testing.assert_allclose(rhs, 0.0, atol=1e-15)
 
     def test_decay_single_synapse(self) -> None:
-        p = Params(n_pre=1, I_s0=1.0, w0=0.0, E0=0.0,
-                   x_pre0=0.0, r_post0=0.0,
+        p = Params(n_pre=1, I_s0=(1.0,), w0=(0.0,), E0=(0.0,),
+                   x_pre0=(0.0,), r_post0=0.0,
                    R_bar0=0.0, y_post0=0.0, r_target=0.0, V0=-65.0, E_L=-65.0)
         y = _init_state(p)
         dt = 1e-4
@@ -120,14 +115,14 @@ class TestODEN1:
         for _ in range(int(T / dt)):
             y = _advance_state(y, dt, p, method="rk4", voltage_active=False)
         exact = 1.0 * np.exp(-T / p.tau_s)
-        assert abs(y[_I_s_idx(0)] - exact) / exact < 1e-7
+        assert abs(y[I_s_idx(0)] - exact) / exact < 1e-7
 
     def test_weight_clamp(self) -> None:
-        p = Params(n_pre=1, w0=0.001, E0=1.0, R_bar0=100.0,
+        p = Params(n_pre=1, w0=(0.001,), E0=(1.0,), R_bar0=100.0,
                    r_post0=0.0, r_target=0.0)
         y = _init_state(p)
         result = _advance_state(y, 0.01, p, method="rk4", voltage_active=False)
-        assert result[_W_idx(0)] >= 0.0
+        assert result[W_idx(0)] >= 0.0
 
 
 # ── Short simulation smoke tests ───────────────────────────────────
@@ -139,7 +134,7 @@ def _silent(it):
 class TestSimulateSmoke:
     @pytest.mark.parametrize("n_pre", [1, 2, 3, 5])
     def test_simulate_runs(self, n_pre: int, tmp_path: Path) -> None:
-        p = Params(n_pre=n_pre, T=0.1, r_pre=20.0, w0=2.0)
+        p = Params(n_pre=n_pre, T=0.1, r_pre=(20.0,) * n_pre, w0=(2.0,) * n_pre)
         run = simulate(p, "smoke", output_dir=tmp_path, progress=_silent)
         df = run.df()
         for key in series_keys(n_pre):
@@ -149,7 +144,7 @@ class TestSimulateSmoke:
 
     @pytest.mark.parametrize("n_pre", [1, 2, 5])
     def test_no_nan_inf(self, n_pre: int, tmp_path: Path) -> None:
-        p = Params(n_pre=n_pre, T=0.5, r_pre=20.0, w0=2.0)
+        p = Params(n_pre=n_pre, T=0.5, r_pre=(20.0,) * n_pre, w0=(2.0,) * n_pre)
         run = simulate(p, "smoke", output_dir=tmp_path, progress=_silent)
         df = run.df()
         for i in range(n_pre):

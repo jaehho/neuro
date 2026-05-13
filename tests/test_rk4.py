@@ -26,10 +26,10 @@ from neuro.params import (
     RBAR_IDX,
     V_IDX,
     Y_POST_IDX,
-    _E_idx,
-    _I_s_idx,
-    _W_idx,
-    _X_pre_idx,
+    E_idx,
+    I_s_idx,
+    W_idx,
+    X_pre_idx,
 )
 
 
@@ -91,13 +91,13 @@ class TestExponentialDecays:
 
     # (name, index, initial-value field, synapse_idx or None, tau field)
     CASES = [
-        ("I_s1",   _I_s_idx(0),   "I_s0",   0, "tau_s"),
-        ("I_s2",   _I_s_idx(1),   "I_s0",   1, "tau_s"),
-        ("x_pre1", _X_pre_idx(0), "x_pre0", 0, "tau_plus"),
-        ("x_pre2", _X_pre_idx(1), "x_pre0", 1, "tau_plus"),
+        ("I_s1",   I_s_idx(0),   "I_s0",   0, "tau_s"),
+        ("I_s2",   I_s_idx(1),   "I_s0",   1, "tau_s"),
+        ("x_pre1", X_pre_idx(0), "x_pre0", 0, "tau_plus"),
+        ("x_pre2", X_pre_idx(1), "x_pre0", 1, "tau_plus"),
         ("y_post", Y_POST_IDX,    "y_post0", None, "tau_minus"),
-        ("E1",     _E_idx(0),     "E0",     0, "tau_e"),
-        ("E2",     _E_idx(1),     "E0",     1, "tau_e"),
+        ("E1",     E_idx(0),     "E0",     0, "tau_e"),
+        ("E2",     E_idx(1),     "E0",     1, "tau_e"),
         ("r_post", R_POST_IDX,    "r_post0", None, "tau_r_post"),
         ("R_bar",  RBAR_IDX,      "R_bar0",  None, "tau_Rbar"),
     ]
@@ -214,7 +214,7 @@ class TestCoupledVoltage:
         y_final = _integrate(_make_y0(p), p, dt, n_steps, method="rk4",
                              voltage_active=True)
         exact = _exact_decay(p.I_s0[0], p.tau_s, T)
-        rel_err = abs(y_final[_I_s_idx(0)] - exact) / abs(exact)
+        rel_err = abs(y_final[I_s_idx(0)] - exact) / abs(exact)
         assert rel_err < 1e-7
 
     def test_weight_stays_constant(self) -> None:
@@ -225,8 +225,8 @@ class TestCoupledVoltage:
 
         y_final = _integrate(_make_y0(p), p, dt, n_steps, method="rk4",
                              voltage_active=True)
-        assert y_final[_W_idx(0)] == pytest.approx(p.w0[0], abs=1e-15)
-        assert y_final[_W_idx(1)] == pytest.approx(p.w0[1], abs=1e-15)
+        assert y_final[W_idx(0)] == pytest.approx(p.w0[0], abs=1e-15)
+        assert y_final[W_idx(1)] == pytest.approx(p.w0[1], abs=1e-15)
 
 
 # ── 3. Convergence order ───────────────────────────────────────────
@@ -310,7 +310,7 @@ class TestEdgeCases:
     def test_zero_dt_returns_copy(self) -> None:
         p = Params(n_pre=2)
         y0 = _make_y0(p)
-        y0[_I_s_idx(0)] = 1.0
+        y0[I_s_idx(0)] = 1.0
         result = _advance_state(y0, 0.0, p, method="rk4", voltage_active=True)
         np.testing.assert_array_equal(result, y0)
         assert result is not y0
@@ -320,14 +320,14 @@ class TestEdgeCases:
                    r_post0=0.0, r_target=0.0)
         y0 = _make_y0(p)
         result = _advance_state(y0, 0.01, p, method="rk4", voltage_active=False)
-        assert result[_W_idx(0)] >= 0.0
+        assert result[W_idx(0)] >= 0.0
 
     def test_weight_clamp_upper(self) -> None:
         p = Params(n_pre=2, w0=(9.99, 2.0), wmax=10.0, E0=(1.0, 0.0), R_bar0=-100.0,
                    r_post0=0.0, r_target=0.0)
         y0 = _make_y0(p)
         result = _advance_state(y0, 0.01, p, method="rk4", voltage_active=False)
-        assert result[_W_idx(0)] <= p.wmax
+        assert result[W_idx(0)] <= p.wmax
 
     def test_rhs_at_equilibrium(self) -> None:
         p = Params(n_pre=2, V0=-65.0, E_L=-65.0,

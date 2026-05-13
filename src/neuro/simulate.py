@@ -36,10 +36,10 @@ from neuro.params import (
     R_POST_IDX,
     V_IDX,
     Y_POST_IDX,
-    _E_idx,
-    _I_s_idx,
-    _W_idx,
-    _X_pre_idx,
+    E_idx,
+    I_s_idx,
+    W_idx,
+    X_pre_idx,
 )
 from neuro.recording import ParquetRecorder, spike_parquet_path
 
@@ -204,9 +204,9 @@ def simulate(
         for i in range(n_pre):
             if pre_spikes[i]:
                 recorder.append_spike(f"pre{i+1}_spike_times", t)
-                y[_I_s_idx(i)] += 1.0
-                y[_X_pre_idx(i)] += 1.0
-                y[_E_idx(i)] -= p.eta_minus * y[_W_idx(i)] * y[Y_POST_IDX]
+                y[I_s_idx(i)] += 1.0
+                y[X_pre_idx(i)] += 1.0
+                y[E_idx(i)] -= p.eta_minus * y[W_idx(i)] * y[Y_POST_IDX]
 
         post_spike = 0
         is_refractory = 1 if ref_remaining > 0.0 else 0
@@ -238,9 +238,9 @@ def simulate(
 
                 y_mid[V_IDX] = p.V_reset
                 y_mid[Y_POST_IDX] += 1.0
-                y_mid[R_POST_IDX] += 1.0
+                y_mid[R_POST_IDX] += 1.0 / p.tau_r_post
                 for i in range(n_pre):
-                    y_mid[_E_idx(i)] += p.eta_plus * (p.wmax - y_mid[_W_idx(i)]) * y_mid[_X_pre_idx(i)]
+                    y_mid[E_idx(i)] += p.eta_plus * (p.wmax - y_mid[W_idx(i)]) * y_mid[X_pre_idx(i)]
 
                 if use_window:
                     post_spike_buf.append(spike_t)
@@ -263,7 +263,7 @@ def simulate(
             )
             if early_stop is not None:
                 rr_post = ro if ro is not None else float(y[R_POST_IDX])
-                w_mean = float(np.mean([y[_W_idx(i)] for i in range(n_pre)]))
+                w_mean = float(np.mean([y[W_idx(i)] for i in range(n_pre)]))
                 if early_stop.update(t, rr_post, r_post=rr_post, w=w_mean):
                     converged_at = t
                     break

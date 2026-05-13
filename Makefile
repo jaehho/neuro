@@ -4,7 +4,7 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 .ONESHELL:
 
-.PHONY: help remote remote-shell
+.PHONY: help remote remote-shell remote-pull
 
 REMOTE_HOST := mililab
 REMOTE_PROJ := /home/jaeho/neuro
@@ -83,3 +83,7 @@ remote: ## Push, run CMD on $(REMOTE_HOST) in tmux:$(REMOTE_TMUX), stream live, 
 
 remote-shell: ## SSH into $(REMOTE_HOST) and cd to the project directory
 	ssh -t $(REMOTE_HOST) "cd $(REMOTE_PROJ) && exec bash -l"
+
+remote-pull: ## Rsync $(REMOTE_HOST):$(REMOTE_PROJ)/output/ to ./output/ (no remote run; useful when `make remote` was interrupted)
+	rsync -av --update --exclude='*.tmp' \
+		$(REMOTE_HOST):$(REMOTE_PROJ)/output/ ./output/

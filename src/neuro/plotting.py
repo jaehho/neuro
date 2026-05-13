@@ -8,7 +8,9 @@ with polars if you want to make your own figure.
 """
 from __future__ import annotations
 
+import html as html_module
 import json
+from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -23,7 +25,20 @@ from neuro.io import load_time_series_frame
 from neuro.params import Params
 
 
-def all_plot_variables(n_pre: int) -> list[str]:
+def _params_block(p: Params) -> str:
+    items = list(asdict(p).items())
+    width = max(len(k) for k, _ in items)
+    body = "\n".join(f"{k.ljust(width)} = {v!r}" for k, v in items)
+    return (
+        '<details style="font-family:monospace;padding:8px 12px;border-bottom:1px solid #ddd;">'
+        '<summary style="cursor:pointer;font-weight:bold;">Parameters</summary>'
+        f'<pre style="margin:8px 0 0 0;">{html_module.escape(body)}</pre>'
+        '</details>'
+    )
+
+
+def all_plot_variables(p: Params) -> list[str]:
+    n_pre = p.n_pre
     v = ["V"]
     v += [f"I_s{i+1}" for i in range(n_pre)]
     v += [f"x_pre{i+1}" for i in range(n_pre)]
@@ -31,7 +46,8 @@ def all_plot_variables(n_pre: int) -> list[str]:
     v += [f"E{i+1}" for i in range(n_pre)]
     v += [f"r_pre{i+1}" for i in range(n_pre)]
     v.append("r_post")
-    v += ["R", "R_bar", "M"]
+    # In gated mode M = R directly, so R_bar is unused and M duplicates R.
+    v += ["R"] if p.M_rule == "gated" else ["R", "R_bar", "M"]
     v += [f"w{i+1}" for i in range(n_pre)]
     return v
 
@@ -71,7 +87,7 @@ def _build_figure(
     x1: float | None,
     variables: list[str] | None,
 ):
-    apv = all_plot_variables(p.n_pre)
+    apv = all_plot_variables(p)
     vtitles = variable_titles(p.n_pre)
 
     plot_vars = variables if variables is not None else apv
@@ -174,10 +190,11 @@ def serve_zoom(
         raise FileNotFoundError(f"Parquet does not exist: {source}")
     js_path = _plotly_js_path()
 
+    params_block = _params_block(p)
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"/><title>neuro</title>
-<style>html,body,#plot {{ height:100%; width:100%; margin:0; background:#fff; }}</style>
-</head><body><div id="plot"></div>
+<style>html,body {{ margin:0; background:#fff; }} #plot {{ width:100%; height:calc(100vh - 60px); }}</style>
+</head><body>{params_block}<div id="plot"></div>
 <script src="/plotly.min.js"></script>
 <script>
   const BASE_MAX_POINTS = {max_points};

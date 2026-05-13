@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from neuro import Params, simulate
 
-p = Params()
+p = Params(r_pre=(21.0,), r_target=10)
 
 if __name__ == "__main__":
     run = simulate(p, name="baseline")

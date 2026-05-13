@@ -4,18 +4,21 @@ Linear-gated rule (M = R = target − r_post). Wide log-spaced ranges so
 the heatmap shows a saturation band at r_target ≈ 333 Hz (= 1/τ_ref
 with τ_ref = 3 ms) where the post can't fire faster.
 
-Each cell is a full ``simulate(p, name=…)`` run, so any cell is
-inspectable later via ``load_latest("ceiling-sweep/cell_03_07").serve()``.
-The sweep summary is written to ``output/ceiling-sweep/summary.parquet``
-plus a matplotlib heatmap at ``summary.png``.
+Each invocation creates a self-contained sweep dir
+``output/ceiling-sweep/<YYYYMMDD_HHMMSS>/`` containing ``summary.parquet``,
+``summary.png``, ``base_params.json``, and one ``cell_iJ_jJ/`` subdir per
+grid point. Inspect a cell with
+``load_latest("ceiling-sweep/<sweep-ts>/cell_03_07").serve()``.
 
     uv run python experiments/ceiling_sweep.py
 """
 from __future__ import annotations
 
 import itertools
+import json
 import multiprocessing as mp
-from dataclasses import replace
+from dataclasses import asdict, replace
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -31,7 +34,7 @@ OUT = Path("output") / SWEEP
 BASE = Params(
     T=60.0, dt=1e-4, seed=1, record_every=1e-3,
     n_pre=1,
-    r_pre=20.0,                         # placeholder, overridden below
+    r_pre=(20.0,),                      # placeholder, overridden below
     poisson=True,
 
     # Linear-gated three-factor rule
@@ -41,7 +44,7 @@ BASE = Params(
     rate_mode="window",                 # window estimator stays steady when post fires fast
     rate_window=0.5,
 
-    w0=5.0,                             # higher initial weight encourages saturation
+    w0=(5.0,),                          # higher initial weight encourages saturation
     wmax=10.0,
     eta_plus=1e-4,
     eta_minus=1e-4,
@@ -55,11 +58,11 @@ def _silent(it):
     return it
 
 
-def run_cell(args: tuple[int, int, float, float]) -> dict:
+def run_cell(args: tuple[int, int, float, float, str]) -> dict:
     """Run one (r_pre, r_target) cell and return its summary row."""
-    i, j, x, y = args
+    i, j, x, y, sweep_ts = args
     p = replace(BASE, r_pre=(float(x),), r_target=float(y))
-    name = f"{SWEEP}/cell_{i:02d}_{j:02d}"
+    name = f"{SWEEP}/{sweep_ts}/cell_{i:02d}_{j:02d}"
     run = simulate(p, name=name, progress=_silent)
 
     spk = pl.read_parquet(run.spikes).filter(pl.col("spike_type") == "post")
@@ -100,9 +103,15 @@ def _heatmap(df: pl.DataFrame, png_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    OUT.mkdir(parents=True, exist_ok=True)
+    sweep_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    sweep_dir = OUT / sweep_ts
+    sweep_dir.mkdir(parents=True, exist_ok=True)
+    (sweep_dir / "base_params.json").write_text(
+        json.dumps(asdict(BASE), indent=2, sort_keys=True)
+    )
+
     args_list = [
-        (i, j, X_GRID[j], Y_GRID[i])
+        (i, j, float(X_GRID[j]), float(Y_GRID[i]), sweep_ts)
         for i, j in itertools.product(range(len(Y_GRID)), range(len(X_GRID)))
     ]
 
@@ -112,8 +121,8 @@ if __name__ == "__main__":
                          total=len(args_list), desc="cells"))
 
     df = pl.DataFrame(rows).sort(["i", "j"])
-    summary_pq = OUT / "summary.parquet"
-    summary_png = OUT / "summary.png"
+    summary_pq = sweep_dir / "summary.parquet"
+    summary_png = sweep_dir / "summary.png"
     df.write_parquet(summary_pq)
     _heatmap(df, summary_png)
     print(f"  {summary_pq}")
