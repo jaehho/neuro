@@ -67,7 +67,7 @@ _PER_SYN_FIELDS = ("r_pre", "I_s0", "x_pre0", "E0", "w0")
 @dataclass
 class Params:
     # ── Simulation ──
-    T: float = 20.0           # Total duration (s)
+    T: float = 60.0           # Total duration (s)
     dt: float = 1e-4          # Integration timestep (s); 0.1 ms
     seed: int = 1
     record_every: float = 1e-3

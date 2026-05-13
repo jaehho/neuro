@@ -32,8 +32,8 @@ OUT = Path("output") / SWEEP
 
 BASE = Params()
 
-X_GRID = np.arange(10.0, 25.0, 0.25)   # r_pre (Hz):    0,1,…,20
-Y_GRID = np.arange(10.0, 25.0, 0.25)   # r_target (Hz): 0,1,…,20
+X_GRID = np.arange(10.0, 25.0, 0.5)   # r_pre (Hz):    0,1,…,20
+Y_GRID = np.arange(10.0, 25.0, 0.5)   # r_target (Hz): 0,1,…,20
 
 
 def _silent(it):
