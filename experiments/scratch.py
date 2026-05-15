@@ -4,9 +4,9 @@ from __future__ import annotations
 from neuro import Params, simulate
 
 p = Params(
-    T=5000,
+    T=10000,
     r_pre=(10.0,),
-    r_target=24.5,
+    r_target=23.5,
 )
 
 if __name__ == "__main__":
