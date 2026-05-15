@@ -15,4 +15,4 @@ if __name__ == "__main__":
     run = simulate(p, name="baseline")
     print(f"  parquet: {run.parquet}")
     print(f"  duration: {run.duration_s:.1f}s, rows: {run.rows_written}")
-    run.serve()  # opens http://127.0.0.1:8050/
+    run.serve()  # opens http://127.0.0.1:8050/ in your browser

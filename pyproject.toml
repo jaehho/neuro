@@ -11,8 +11,12 @@ dependencies = [
     "polars>=1.33.1",
     "pyarrow>=23.0.1",
     "scipy>=1.17.0",
+    "textual>=8.2.6",
     "tqdm>=4.67.3",
 ]
+
+[project.scripts]
+neuro = "neuro.tui:run"
 
 [build-system]
 requires = ["hatchling"]

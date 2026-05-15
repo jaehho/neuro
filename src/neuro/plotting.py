@@ -1,16 +1,21 @@
-"""Zoom-adaptive plotly viewer served over HTTP.
+"""Zoom-adaptive Plotly viewer served over HTTP.
 
 ``serve_zoom(parquet_path, params)`` opens a stacked-panel figure of the
-recorded variables and re-decimates from disk on every pan/zoom event,
-which is how multi-million-point parquet runs stay responsive. The
-matplotlib / static-HTML paths are gone — read the parquet directly
-with polars if you want to make your own figure.
+recorded variables in a browser and re-decimates from disk on every
+pan/zoom event, which is how multi-million-point parquet runs stay
+responsive. ``serve_zoom_background`` is the same thing but runs on a
+daemon thread and returns the URL — used by the TUI when you press enter
+on a run row.
 """
 from __future__ import annotations
 
 import html as html_module
 import json
+import socket
+import threading
+import webbrowser
 from dataclasses import asdict
+from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -78,6 +83,13 @@ def variable_titles(n_pre: int) -> dict[str, str]:
 
 
 def _plotly_values(values) -> list[float | None]:
+    """plotly chokes on NaN/inf; convert them to None first.
+
+    Used by static-HTML export paths (e.g. notebooks/trajectories.py). The
+    HTTP viewer's hot path skips this and passes numpy arrays straight to
+    ``go.Scattergl`` — plotly's orjson serializer (via ``fig.to_json``)
+    handles non-finites natively.
+    """
     arr = np.asarray(values)
     if arr.size == 0:
         return []
@@ -107,7 +119,7 @@ def _build_figure(
     frame, spikes = load_time_series_frame(
         path, columns=columns, max_points=max_points, x0=x0, x1=x1,
     )
-    arrays = {col: _plotly_values(frame[col].to_numpy()) for col in columns}
+    arrays = {col: frame[col].to_numpy() for col in columns}
     t = arrays["t"]
 
     titles = []
@@ -140,8 +152,7 @@ def _build_figure(
                 xs = np.array([])
                 ys = np.array([])
             fig.add_trace(
-                go.Scattergl(x=_plotly_values(xs), y=_plotly_values(ys),
-                             mode="lines", name=label, line={"width": 1}),
+                go.Scattergl(x=xs, y=ys, mode="lines", name=label, line={"width": 1}),
                 row=row, col=1,
             )
         row += 1
@@ -178,27 +189,68 @@ def _plotly_js_path() -> Path:
     )
 
 
-def serve_zoom(
-    parquet_path: str | Path,
-    p: Params,
-    *,
-    host: str = "127.0.0.1",
-    port: int = 8050,
-    max_points: int = 40_000,
-    variables: list[str] | None = None,
-):
-    """Serve a stacked-panel figure of the recorded run on http://host:port/.
+def _pick_free_port(host: str) -> int:
+    """Bind to port 0 to let the OS hand us an unused port, then release it."""
+    with socket.socket() as s:
+        s.bind((host, 0))
+        return s.getsockname()[1]
 
-    Re-decimates the parquet on every pan/zoom event, so figures stay
-    responsive on multi-million-point recordings. Blocks until Ctrl-C.
-    """
-    source = Path(parquet_path)
-    if not source.exists():
-        raise FileNotFoundError(f"Parquet does not exist: {source}")
-    js_path = _plotly_js_path()
 
+def _build_zoom_handler(source: Path, p: Params, html: str, js_path: Path, max_points: int,
+                       variables: list[str] | None):
+    # Per-server LRU cache. Revisiting a window (zoom-out to full, re-zooming
+    # to a prior range) skips the polars envelope downsample entirely.
+    @lru_cache(maxsize=16)
+    def _figure_bytes(x0: float | None, x1: float | None, local_max: int) -> bytes:
+        fig = _build_figure(source, p, local_max, x0, x1, variables)
+        return json.dumps(fig.to_plotly_json()).encode("utf-8")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path in {"/", "/index.html"}:
+                body = html.encode("utf-8")
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if parsed.path == "/plotly.min.js":
+                body = js_path.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if parsed.path == "/favicon.ico":
+                self.send_response(HTTPStatus.NO_CONTENT)
+                self.end_headers()
+                return
+            if parsed.path == "/figure":
+                q = parse_qs(parsed.query)
+                x0 = float(q["x0"][0]) if "x0" in q else None
+                x1 = float(q["x1"][0]) if "x1" in q else None
+                local_max = int(q.get("max_points", [str(max_points)])[0])
+                body = _figure_bytes(x0, x1, local_max)
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_error(HTTPStatus.NOT_FOUND)
+
+        def log_message(self, format, *args):  # noqa: A002, ARG002
+            return
+
+    return Handler
+
+
+def _zoom_page_html(p: Params, max_points: int) -> str:
     params_block = _params_block(p, highlight=set(diff_from_defaults(p)))
-    html = f"""<!doctype html>
+    return f"""<!doctype html>
 <html><head><meta charset="utf-8"/><title>neuro</title>
 <style>html,body {{ margin:0; background:#fff; }} #plot {{ width:100%; height:calc(100vh - 60px); }}</style>
 </head><body>{params_block}<div id="plot"></div>
@@ -206,7 +258,7 @@ def serve_zoom(
 <script>
   const BASE_MAX_POINTS = {max_points};
   const plotDiv = document.getElementById("plot");
-  let isUpdating = false, pendingTimer = null, attached = false;
+  let isUpdating = false, pendingTimer = null, attached = false, ready = false;
 
   function rangeFromEvent(e) {{
     if ("xaxis.range[0]" in e && "xaxis.range[1]" in e)
@@ -240,58 +292,80 @@ def serve_zoom(
     isUpdating = true;
     try {{
       const fig = await fetchFig(range);
-      await Plotly.react(plotDiv, fig.data, fig.layout, {{ responsive: true }});
-      attach();
+      if (ready && range !== null) {{
+        // Zoomed/panned: only data changes. restyle is much faster than react.
+        const xs = fig.data.map(d => d.x);
+        const ys = fig.data.map(d => d.y);
+        const idx = fig.data.map((_, i) => i);
+        await Plotly.restyle(plotDiv, {{ x: xs, y: ys }}, idx);
+      }} else {{
+        // First load or zoom-out: full rebuild so axes autorange correctly.
+        await Plotly.react(plotDiv, fig.data, fig.layout, {{ responsive: true }});
+        ready = true;
+        attach();
+      }}
     }} finally {{ isUpdating = false; }}
   }}
   update(null);
 </script></body></html>
 """
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            parsed = urlparse(self.path)
-            if parsed.path in {"/", "/index.html"}:
-                body = html.encode("utf-8")
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            if parsed.path == "/plotly.min.js":
-                body = js_path.read_bytes()
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/javascript; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            if parsed.path == "/favicon.ico":
-                self.send_response(HTTPStatus.NO_CONTENT)
-                self.end_headers()
-                return
-            if parsed.path == "/figure":
-                q = parse_qs(parsed.query)
-                x0 = float(q["x0"][0]) if "x0" in q else None
-                x1 = float(q["x1"][0]) if "x1" in q else None
-                local_max = int(q.get("max_points", [str(max_points)])[0])
-                fig = _build_figure(source, p, local_max, x0, x1, variables)
-                body = json.dumps(fig.to_plotly_json()).encode("utf-8")
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
 
-        def log_message(self, format, *args):  # noqa: A002
-            return
+def serve_zoom(
+    parquet_path: str | Path,
+    p: Params,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 8050,
+    max_points: int = 15_000,
+    variables: list[str] | None = None,
+):
+    """Serve a stacked-panel figure of the recorded run on http://host:port/.
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    Re-decimates the parquet on every pan/zoom event, so figures stay
+    responsive on multi-million-point recordings. Blocks until Ctrl-C.
+    """
+    source = Path(parquet_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Parquet does not exist: {source}")
+    js_path = _plotly_js_path()
+    html = _zoom_page_html(p, max_points)
+    handler = _build_zoom_handler(source, p, html, js_path, max_points, variables)
+    server = ThreadingHTTPServer((host, port), handler)
     print(f"Serving zoom-adaptive plot at http://{host}:{port}")
     try:
         server.serve_forever()
     finally:
         server.server_close()
+
+
+def serve_zoom_background(
+    parquet_path: str | Path,
+    p: Params,
+    *,
+    host: str = "127.0.0.1",
+    port: int | None = None,
+    max_points: int = 15_000,
+    variables: list[str] | None = None,
+    open_browser: bool = True,
+) -> str:
+    """Launch ``serve_zoom`` on a daemon thread; return the URL.
+
+    ``port=None`` auto-picks a free port (so two TUI ``enter`` presses don't
+    collide). Daemon thread means the server dies when the host process
+    (typically the TUI) exits.
+    """
+    source = Path(parquet_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Parquet does not exist: {source}")
+    if port is None:
+        port = _pick_free_port(host)
+    js_path = _plotly_js_path()
+    html = _zoom_page_html(p, max_points)
+    handler = _build_zoom_handler(source, p, html, js_path, max_points, variables)
+    server = ThreadingHTTPServer((host, port), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://{host}:{port}"
+    if open_browser:
+        webbrowser.open(url)
+    return url

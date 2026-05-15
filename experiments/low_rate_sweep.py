@@ -30,10 +30,10 @@ from neuro import Params, simulate
 SWEEP = "low-rate-sweep"
 OUT = Path("output") / SWEEP
 
-BASE = Params()
+BASE = Params(T=10000)
 
-X_GRID = np.arange(10.0, 25.0, 0.5)   # r_pre (Hz):    0,1,…,20
-Y_GRID = np.arange(10.0, 25.0, 0.5)   # r_target (Hz): 0,1,…,20
+X_GRID = np.arange(10.0, 25.0, 1)   # r_pre (Hz):    0,1,…,20
+Y_GRID = np.arange(10.0, 25.0, 1)   # r_target (Hz): 0,1,…,20
 
 
 def _silent(it):

@@ -1,26 +1,24 @@
 """Interactive sweep viewer: clickable heatmap + per-cell zoom plots.
 
-    uv run python scripts/serve_sweep.py                            # list sweeps
-    uv run python scripts/serve_sweep.py <sweep>                    # serve latest
-    uv run python scripts/serve_sweep.py output/<sweep>/<ts>        # serve that ts
-
-The script picks the most recent ``output/<sweep>/<YYYYMMDD_HHMMSS>/``
-directory (or the one passed as an argument) and serves:
+``serve_sweep(sweep_dir)`` opens, on http://host:port/:
 
   - ``GET /``                          the heatmap (same data as summary.png)
   - ``GET /cell/iJ_jJ/``               the cell's zoom-adaptive viewer
   - ``GET /cell/iJ_jJ/figure?x0=…``    figure JSON for pan/zoom
-  - ``GET /cell/iJ_jJ/scaffold``       JSON {code: "..."} for the
+  - ``GET /cell/iJ_jJ/scaffold``       JSON ``{code: "..."}`` for the
                                        "Generate experiment" modal
 
 Clicking a cell on the heatmap opens that cell's viewer in a new tab.
-Ctrl-C tears the server down.
+``serve_sweep_background`` is the same thing on a daemon thread — used
+by the TUI when you press enter on a sweep row.
 """
 from __future__ import annotations
 
 import json
 import re
-import sys
+import threading
+import webbrowser
+from functools import lru_cache
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,55 +27,16 @@ from urllib.parse import parse_qs, urlparse
 import plotly.graph_objects as go
 import polars as pl
 
-from neuro import Run, load_latest
 from neuro.params import Params, diff_from_defaults
-from neuro.plotting import _build_figure, _params_block, _plotly_js_path
+from neuro.plotting import (
+    _build_figure,
+    _params_block,
+    _pick_free_port,
+    _plotly_js_path,
+)
+from neuro.simulate import Run, load_latest
 
-HOST = "127.0.0.1"
-PORT = 8050
-MAX_POINTS_DEFAULT = 40_000
-OUTPUT_DIR = Path("output")
-
-
-def _list_sweeps(output_dir: Path) -> list[tuple[str, Path]]:
-    """All ``(sweep_name, latest_ts_dir)`` under ``output_dir``, newest first."""
-    found: list[tuple[str, Path]] = []
-    if not output_dir.is_dir():
-        return found
-    for sweep_dir in sorted(output_dir.iterdir()):
-        if not sweep_dir.is_dir():
-            continue
-        ts_dirs = sorted(d for d in sweep_dir.iterdir()
-                         if d.is_dir() and (d / "summary.parquet").exists())
-        if ts_dirs:
-            found.append((sweep_dir.name, ts_dirs[-1]))
-    found.sort(key=lambda nt: nt[1].name, reverse=True)
-    return found
-
-
-def _latest_sweep_run(sweep_dir: Path) -> Path:
-    if not sweep_dir.is_dir():
-        raise FileNotFoundError(
-            f"{sweep_dir} does not exist — run the sweep first, e.g.\n"
-            f"    uv run python experiments/{sweep_dir.name.replace('-', '_')}.py"
-        )
-    candidates = sorted(d for d in sweep_dir.iterdir()
-                        if d.is_dir() and (d / "summary.parquet").exists())
-    if not candidates:
-        raise FileNotFoundError(f"No <ts>/summary.parquet under {sweep_dir}")
-    return candidates[-1]
-
-
-def _resolve_sweep_run(arg: str) -> Path:
-    """Map a CLI arg to a sweep run directory.
-
-    Accepts a sweep name (``low-rate-sweep``) or a path to a specific
-    timestamped directory (``output/low-rate-sweep/20260513_110517``).
-    """
-    p = Path(arg)
-    if p.is_dir() and (p / "summary.parquet").exists():
-        return p
-    return _latest_sweep_run(OUTPUT_DIR / arg)
+MAX_POINTS_DEFAULT = 15_000
 
 
 def _scaffold_code(p: Params, cell_key: str, sweep_name: str, sweep_ts: str) -> str:
@@ -197,7 +156,7 @@ def _cell_html(cell_key: str, p: Params) -> str:
   const plotDiv = document.getElementById("plot");
   const modal = document.getElementById("modal");
   const codeEl = document.getElementById("code");
-  let isUpdating = false, pendingTimer = null, attached = false;
+  let isUpdating = false, pendingTimer = null, attached = false, ready = false;
 
   document.getElementById("gen-btn").addEventListener("click", async () => {{
     const r = await fetch(SCAFFOLD_URL);
@@ -248,8 +207,16 @@ def _cell_html(cell_key: str, p: Params) -> str:
     isUpdating = true;
     try {{
       const fig = await fetchFig(range);
-      await Plotly.react(plotDiv, fig.data, fig.layout, {{responsive: true}});
-      attach();
+      if (ready && range !== null) {{
+        const xs = fig.data.map(d => d.x);
+        const ys = fig.data.map(d => d.y);
+        const idx = fig.data.map((_, i) => i);
+        await Plotly.restyle(plotDiv, {{x: xs, y: ys}}, idx);
+      }} else {{
+        await Plotly.react(plotDiv, fig.data, fig.layout, {{responsive: true}});
+        ready = true;
+        attach();
+      }}
     }} finally {{ isUpdating = false; }}
   }}
   update(null);
@@ -257,19 +224,7 @@ def _cell_html(cell_key: str, p: Params) -> str:
 """
 
 
-def main() -> None:
-    args = sys.argv[1:]
-    if not args:
-        sweeps = _list_sweeps(OUTPUT_DIR)
-        if not sweeps:
-            print(f"No sweeps under {OUTPUT_DIR}/")
-            sys.exit(1)
-        print(f"{'sweep':<30} latest run")
-        for name, ts_dir in sweeps:
-            print(f"{name:<30} {ts_dir}")
-        sys.exit(0)
-
-    sweep_run_dir = _resolve_sweep_run(args[0])
+def _build_sweep_handler(sweep_run_dir: Path):
     sweep = sweep_run_dir.parent.name
     sweep_ts = sweep_run_dir.name
     summary = pl.read_parquet(sweep_run_dir / "summary.parquet")
@@ -278,7 +233,6 @@ def main() -> None:
     js_bytes = _plotly_js_path().read_bytes()
 
     cell_prefix = re.compile(r"^/cell/(\d{2})_(\d{2})")
-    # Cache loaded runs so pan/zoom doesn't re-read the sidecar each event.
     cell_cache: dict[tuple[int, int], Run] = {}
 
     def _load_cell(i: int, j: int) -> Run:
@@ -286,6 +240,13 @@ def main() -> None:
         if key not in cell_cache:
             cell_cache[key] = load_latest(f"{sweep}/{sweep_ts}/cell_{i:02d}_{j:02d}")
         return cell_cache[key]
+
+    @lru_cache(maxsize=32)
+    def _cell_figure_bytes(i: int, j: int, x0: float | None, x1: float | None,
+                           mx: int) -> bytes:
+        run = _load_cell(i, j)
+        fig = _build_figure(run.parquet, run.params, mx, x0, x1, None)
+        return json.dumps(fig.to_plotly_json()).encode("utf-8")
 
     class Handler(BaseHTTPRequestHandler):
         def _send(self, body: bytes, ctype: str) -> None:
@@ -323,8 +284,7 @@ def main() -> None:
                     x0 = float(q["x0"][0]) if "x0" in q else None
                     x1 = float(q["x1"][0]) if "x1" in q else None
                     mx = int(q.get("max_points", [str(MAX_POINTS_DEFAULT)])[0])
-                    fig = _build_figure(run.parquet, run.params, mx, x0, x1, None)
-                    self._send(json.dumps(fig.to_plotly_json()).encode("utf-8"),
+                    self._send(_cell_figure_bytes(i, j, x0, x1, mx),
                                "application/json; charset=utf-8")
                     return
                 if tail in ("/scaffold", "/scaffold/"):
@@ -343,14 +303,37 @@ def main() -> None:
         def log_message(self, format, *args):  # noqa: A002, ARG002
             return
 
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    return Handler
+
+
+def serve_sweep(sweep_run_dir: str | Path, *, host: str = "127.0.0.1",
+                port: int = 8050) -> None:
+    """Serve the heatmap + per-cell viewers. Blocks until Ctrl-C."""
+    sweep_run_dir = Path(sweep_run_dir)
+    if not (sweep_run_dir / "summary.parquet").exists():
+        raise FileNotFoundError(f"{sweep_run_dir}/summary.parquet not found")
+    handler = _build_sweep_handler(sweep_run_dir)
+    server = ThreadingHTTPServer((host, port), handler)
     print(f"sweep:  {sweep_run_dir}")
-    print(f"viewer: http://{HOST}:{PORT}/")
+    print(f"viewer: http://{host}:{port}/")
     try:
         server.serve_forever()
     finally:
         server.server_close()
 
 
-if __name__ == "__main__":
-    main()
+def serve_sweep_background(sweep_run_dir: str | Path, *, host: str = "127.0.0.1",
+                           port: int | None = None, open_browser: bool = True) -> str:
+    """Launch ``serve_sweep`` on a daemon thread; return the URL."""
+    sweep_run_dir = Path(sweep_run_dir)
+    if not (sweep_run_dir / "summary.parquet").exists():
+        raise FileNotFoundError(f"{sweep_run_dir}/summary.parquet not found")
+    if port is None:
+        port = _pick_free_port(host)
+    handler = _build_sweep_handler(sweep_run_dir)
+    server = ThreadingHTTPServer((host, port), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://{host}:{port}"
+    if open_browser:
+        webbrowser.open(url)
+    return url

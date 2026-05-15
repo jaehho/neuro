@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from collections.abc import Callable, Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -58,15 +58,26 @@ class Run:
     rows_written: int
     spikes_written: int
     converged_at: float | None
+    tags: list[str] = field(default_factory=list)
+    note: str = ""
 
     def df(self) -> pl.DataFrame:
         """Read the per-step series into memory."""
         return pl.read_parquet(str(self.parquet))
 
-    def serve(self, **kwargs) -> None:
-        """Open the zoom-adaptive viewer on this run."""
+    def serve(self, *, background: bool = False, **kwargs) -> str | None:
+        """Open the Plotly zoom-adaptive viewer in a browser.
+
+        Blocking by default (Ctrl-C exits) so ``run.serve()`` in an
+        experiment script keeps the server alive. Pass ``background=True``
+        to run on a daemon thread and return the URL — used by the TUI.
+        """
+        if background:
+            from neuro.plotting import serve_zoom_background
+            return serve_zoom_background(self.parquet, self.params, **kwargs)
         from neuro.plotting import serve_zoom
         serve_zoom(self.parquet, self.params, **kwargs)
+        return None
 
 
 def _sidecar_path(parquet: Path) -> Path:
@@ -81,6 +92,8 @@ def _write_sidecar(run: Run) -> None:
         "rows_written": run.rows_written,
         "spikes_written": run.spikes_written,
         "converged_at": run.converged_at,
+        "tags": list(run.tags),
+        "note": run.note,
         "params": asdict(run.params),
     }
     run.sidecar.write_text(json.dumps(payload, indent=2, sort_keys=True))
@@ -104,6 +117,8 @@ def load_run(parquet_path: str | Path) -> Run:
         rows_written=int(payload["rows_written"]),
         spikes_written=int(payload["spikes_written"]),
         converged_at=payload.get("converged_at"),
+        tags=list(payload.get("tags", [])),
+        note=payload.get("note", ""),
     )
 
 
@@ -151,6 +166,8 @@ def simulate(
     chunk_rows: int = 100_000,
     progress: Callable[[Iterable[int]], Iterable[int]] | None = None,
     early_stop: StreamingConvergence | None = None,
+    tags: list[str] | None = None,
+    note: str = "",
 ) -> Run:
     """Run the n_pre → 1 post neuromodulated STDP simulation (RK4).
 
@@ -282,6 +299,8 @@ def simulate(
         rows_written=int(summary["rows_written"]),
         spikes_written=int(summary["spikes_written"]),
         converged_at=converged_at,
+        tags=list(tags) if tags else [],
+        note=note,
     )
     _write_sidecar(run)
     return run
